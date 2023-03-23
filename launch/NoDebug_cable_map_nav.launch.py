@@ -16,17 +16,17 @@ def generate_launch_description():
     )
 
     world_to_drone = Node(
-        package="radar_cable_follower",
+        package="cable-map-nav",
         executable="drone_frame_broadcaster"
     )
 
     lidar_to_mmwave = Node(
-        package="radar_cable_follower",
+        package="cable-map-nav",
         executable="lidar_to_mmwave_node"
     )
 
     radar_pointcloud_filter = Node(
-        package="radar_cable_follower",
+        package="cable-map-nav",
         executable="radar_pointcloud_filter",
         parameters=[
             {'launch_with_debug': 0}
@@ -34,7 +34,7 @@ def generate_launch_description():
     )
 
     offboard_control = Node(
-        package="radar_cable_follower",
+        package="cable-map-nav",
         executable="offboard_control",
         parameters=[
             {'launch_with_debug': 0}

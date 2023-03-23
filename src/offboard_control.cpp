@@ -454,6 +454,44 @@ void OffboardControl::flight_state_machine() {
 		this->arm();
 	}
 
+	static float map_pos_array[5][3] = {{0.0, 0.0, -2.5}, 
+										{4.3789191246032715, -0.15495994687080383, -2.5}, 
+										{4.381380558013916, -0.23446471989154816, -13.59790325164795},
+										{-0.6918609142303467, -1.7010489702224731, -13.61758804321289}, 
+										{-4.006442546844482, 14.712209701538086, -13.61367416381836}};
+
+	static int map_pos_cnt = 0;
+
+	RCLCPP_INFO(this->get_logger(), "\n \nmap_pos_cnt %d \n", map_pos_cnt);
+
+	if (map_pos_cnt < 5) {
+
+		px4_msgs::msg::TrajectorySetpoint msg{};
+		msg.timestamp = _timestamp.load();
+		msg.x = map_pos_array[map_pos_cnt][0]; // in meters NED
+		msg.y = map_pos_array[map_pos_cnt][1]; // in meters NED
+		msg.z = map_pos_array[map_pos_cnt][2]; // in meters NED
+		// msg.x = 0.0; // in meters NED
+		// msg.y = 0.0; // in meters NED
+		// msg.z = -15; // in meters NED
+		msg.yaw = -1.095; // rotation around z NED in radians
+		msg.vx = 0.0; // m/s NED
+		msg.vy = 0.0; // m/s NED
+		msg.vz = 0.0; // m/s NED
+
+		OffboardControl::publish_setpoint(msg);
+
+		if ( (abs(abs(_drone_pose.position(0))-abs(map_pos_array[map_pos_cnt][0]))<0.5) && 
+			(abs(abs(_drone_pose.position(1))-abs(map_pos_array[map_pos_cnt][1]))<0.5) && 
+			(abs(abs(_drone_pose.position(2))-abs(map_pos_array[map_pos_cnt][2]))<0.5) ) {
+
+			map_pos_cnt++;	
+		}
+
+		return;
+
+	}
+
 	this->get_parameter("take_off_to_height", _takeoff_height);
 	if(_takeoff_height > 1){
 		static bool takeoff_print = false;

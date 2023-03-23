@@ -10,18 +10,11 @@ import os
 
 def generate_launch_description():
     config = os.path.join(
-        get_package_share_directory('radar_cable_follower'),
+        get_package_share_directory('cable-map-nav'),
         'config',
         'params.yaml'
     )
 
-    # tf_drone_to_iwr = Node(
-    #     package="tf2_ros",
-    #     executable="static_transform_publisher",
-    #     # arguments=["0", "0", "0.05", "0", "0", "0", "drone", "iwr6843_frame"] # Simulation (x, y, z, yaw, pitch, roll)
-    #     arguments=["0", "0", "0.05", "1.57", "0", "3.14", "drone", "iwr6843_frame"] # Simulation (x, y, z, yaw, pitch, roll)
-    #     #arguments=["0", "0", "0.05", "3.1415", "-1.57079632679", "0", "drone", "iwr6843_frame"] # Simulation
-    # )
     tf_drone_to_iwr = Node(
         package="tf2_ros",
         executable="static_transform_publisher",
@@ -30,23 +23,29 @@ def generate_launch_description():
     )
 
     world_to_drone = Node(
-        package="radar_cable_follower",
+        package="cable-map-nav",
         executable="drone_frame_broadcaster"
     )
 
-    lidar_to_mmwave = Node(
-        package="radar_cable_follower",
-        executable="lidar_to_mmwave_node"
+    mmwave = Node(
+        package="iwr6843isk_pub",
+        executable="pcl_pub",
+        parameters=[
+            {'cfg_path': '/home/ubuntu/ros2_ws/src/iwr6843isk_ros2/cfg_files/xwr68xx_profile_25Hz_Elev_43m.cfg'},
+            {'cli_port': '/dev/ttyUSB0'},
+            {'data_port': '/dev/ttyUSB1'}
+         ],
+        arguments=['--ros-args', '--log-level', 'warn']
     )
 
     radar_pointcloud_filter = Node(
-        package="radar_cable_follower",
+        package="cable-map-nav",
         executable="radar_pointcloud_filter",
         parameters=[config]
     )
 
     offboard_control = Node(
-        package="radar_cable_follower",
+        package="cable-map-nav",
         executable="offboard_control",
         parameters=[config]
     )
@@ -55,7 +54,7 @@ def generate_launch_description():
     return LaunchDescription([
         tf_drone_to_iwr,
         world_to_drone,
-        lidar_to_mmwave,
+        mmwave,
         radar_pointcloud_filter,
         offboard_control
     ])

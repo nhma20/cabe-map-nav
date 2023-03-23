@@ -124,7 +124,7 @@ void LidarToMmwave::lidar_to_mmwave_pcl(const sensor_msgs::msg::LaserScan::Share
 	}
 	seeded = true;
 	// generate noise
-	float amplitude = 0.05;
+	float amplitude = 0.01;
 	float noise;
 	// convert to xyz (including noise)
 	for(size_t i = 0; i<objects_dist.size(); i++){
