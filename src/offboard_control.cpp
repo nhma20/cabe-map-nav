@@ -38,6 +38,7 @@
 #include <px4_msgs/msg/vehicle_control_mode.hpp>
 #include <px4_msgs/msg/vehicle_status.hpp>
 #include <px4_msgs/msg/rc_channels.hpp>
+#include <px4_msgs/msg/vehicle_global_position.hpp>
 
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
@@ -129,6 +130,17 @@ public:
 			});
 
 
+		_goal_point_pub = this->create_publisher<geometry_msgs::msg::PointStamped>("/goal_point", 10);
+
+
+			_global_position_sub = this->create_subscription<px4_msgs::msg::VehicleGlobalPosition>(
+			"/fmu/vehicle_global_position/out",	10,
+            [this](px4_msgs::msg::VehicleGlobalPosition::ConstSharedPtr msg) {
+				_global_latitude = (float)msg->lat; // degrees
+				_global_longitude = (float)msg->lon; // degrees
+			}); 
+
+
 		if(_launch_with_debug > 0)
 		{
 			_follow_pose_pub = this->create_publisher<geometry_msgs::msg::PoseStamped>("/follow_pose", 10);
@@ -182,12 +194,14 @@ private:
 	rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr _follow_pose_pub;
 	rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr _manual_path_pub;
 	rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr _offboard_path_pub;
+	rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr _goal_point_pub;
 
 	rclcpp::Subscription<radar_cable_follower_msgs::msg::TrackedPowerlines>::SharedPtr _powerline_pose_sub;
 	rclcpp::Subscription<px4_msgs::msg::Timesync>::SharedPtr _timesync_sub;
 	rclcpp::Subscription<px4_msgs::msg::VehicleStatus>::SharedPtr _vehicle_status_sub;
 	rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr _selected_id_sub;
 	rclcpp::Subscription<px4_msgs::msg::RcChannels>::SharedPtr _rc_channels_sub;
+	rclcpp::Subscription<px4_msgs::msg::VehicleGlobalPosition>::SharedPtr _global_position_sub;
 
 	std::shared_ptr<tf2_ros::TransformListener> transform_listener_{nullptr};
 	std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
@@ -223,6 +237,9 @@ private:
 
 	float _hover_height = 2;
 
+	float _global_latitude = 0.0; // degrees
+	float _global_longitude = 0.0; // degrees
+
 	void publish_path();
 	void mission_state_machine();
 	void flight_state_machine();
@@ -236,6 +253,7 @@ private:
 	void publish_vehicle_command(uint16_t command, float param1 = 0.0,
 				     float param2 = 0.0) const;
 	void world_to_points();
+	void latlon_to_xy(double lat1, double lon1, double lat2, double lon2, float & x_out, float & y_out);
 };
 
 
@@ -418,6 +436,34 @@ void OffboardControl::mission_state_machine() {
 }
 
 
+void OffboardControl::latlon_to_xy(double lat1, double lon1, double lat2, double lon2, float &x_out, float &y_out) {
+
+	double p = (double)PI/180.0;
+    double a = 0.5 - cos((lat2-lat1)*p)/2.0; 
+	double b = cos(lat1*p) * cos(lat2*p) * (1-cos((lon2-lon1)*p))/2.0;
+    double distance = 12742.0 * asin(sqrt(a+b)) * 1000.0; // 2*R*asin... to meters
+
+    double y = sin(p*(lon2-lon1)) * cos(p*lat2);
+    double x = cos(p*lat1)*sin(p*lat2) - sin(p*lat1)*cos(p*lat2)*cos(p*(lon2-lon1));
+    double bearing = atan2(y,x);
+    bearing = bearing / p;
+    bearing = fmod( ( bearing + 360.0), 360);
+
+    x_out = (float)(cos(p*bearing) * distance);
+    y_out = (float)(sin(p*bearing) * distance);
+
+	// RCLCPP_INFO(this->get_logger(), "\n lat1 %f \n", lat1);
+	// RCLCPP_INFO(this->get_logger(), "\n lon1 %f \n", lon1);
+	// RCLCPP_INFO(this->get_logger(), "\n lat2 %f \n", lat2);
+	// RCLCPP_INFO(this->get_logger(), "\n lon2 %f \n", lon2);
+	// RCLCPP_INFO(this->get_logger(), "\n p %f \n", p);
+	// RCLCPP_INFO(this->get_logger(), "\n a %f \n", a);
+	// RCLCPP_INFO(this->get_logger(), "\n b %f \n", b);
+	// RCLCPP_INFO(this->get_logger(), "\n distance %f \n", distance);
+
+}
+
+
 void OffboardControl::flight_state_machine() {
 
 	OffboardControl::update_drone_pose();
@@ -454,39 +500,91 @@ void OffboardControl::flight_state_machine() {
 		this->arm();
 	}
 
-	static float map_pos_array[5][3] = {{0.0, 0.0, -2.5}, 
-										{4.3789191246032715, -0.15495994687080383, -2.5}, 
-										{4.381380558013916, -0.23446471989154816, -13.59790325164795},
-										{-0.6918609142303467, -1.7010489702224731, -13.61758804321289}, 
-										{-4.006442546844482, 14.712209701538086, -13.61367416381836}};
+	// static float map_pos_array[5][3] = {{0.0, 0.0, -2.5}, 
+	// 									{4.3789191246032715, -0.15495994687080383, -2.5}, 
+	// 									{4.381380558013916, -0.23446471989154816, -13.59790325164795},
+	// 									{-0.6918609142303467, -1.7010489702224731, -13.61758804321289}, 
+	// 									{-4.006442546844482, 14.712209701538086, -13.61367416381836}};
+
+	// lat, long ,-z
+	static double map_pos_array[6][3] = {{_global_latitude, _global_longitude, 2.5}, // takeoff
+										{55.47029419, 10.32891724, 2.5}, // north of middle of span, 2.5m
+										{55.47029419, 10.32891724, 13.5}, // north of middle of span, 13.5m
+										{55.47018588, 10.32896105, 13.5}, // middle of span, 13.5m
+										{55.47012786, 10.32933877, 13.5}, // beyond east tower, 13.5m
+										{55.47023526, 10.32855140, 13.5}}; // beyond west tower, 13.5m
 
 	static int map_pos_cnt = 0;
 
 	RCLCPP_INFO(this->get_logger(), "\n \nmap_pos_cnt %d \n", map_pos_cnt);
 
-	if (map_pos_cnt < 5) {
+	if (map_pos_cnt < (int)(sizeof(map_pos_array)/sizeof(map_pos_array[0]))) { //6
+
+		// subscribe to vehicle_global_position
+		// use latlon_to_xy() to find XY offset between target latlong (from array) and current latlong
+		// translate local XY offset into world frame (waypoint_xy + world_xy)?
+		// create message like before
+
+		float gps_local_x = 0.0;
+		float gps_local_y = 0.0;
+		OffboardControl::latlon_to_xy(_global_latitude, _global_longitude, 
+										map_pos_array[map_pos_cnt][0], map_pos_array[map_pos_cnt][1], 
+										gps_local_x, gps_local_y);
+
+		// relative XY to world XY (incl. ENU to NED)
+		float gps_waypoint_world_coordinate_x = _drone_pose.position(0) + gps_local_x;
+		float gps_waypoint_world_coordinate_y = -1*_drone_pose.position(1) + gps_local_y;
+		float gps_waypoint_world_coordinate_z = -1*map_pos_array[map_pos_cnt][2];
+
+		// RCLCPP_INFO(this->get_logger(), "\n gps_world_x %f \n", gps_waypoint_world_coordinate_x);
+		// RCLCPP_INFO(this->get_logger(), "\n gps_world_y %f \n", gps_waypoint_world_coordinate_y);
+
 
 		px4_msgs::msg::TrajectorySetpoint msg{};
 		msg.timestamp = _timestamp.load();
-		msg.x = map_pos_array[map_pos_cnt][0]; // in meters NED
-		msg.y = map_pos_array[map_pos_cnt][1]; // in meters NED
-		msg.z = map_pos_array[map_pos_cnt][2]; // in meters NED
-		// msg.x = 0.0; // in meters NED
-		// msg.y = 0.0; // in meters NED
-		// msg.z = -15; // in meters NED
+		msg.x = gps_waypoint_world_coordinate_x; // in meters NED
+		msg.y = gps_waypoint_world_coordinate_y; // in meters NED
+		msg.z = gps_waypoint_world_coordinate_z; // in meters NED
 		msg.yaw = -1.095; // rotation around z NED in radians
 		msg.vx = 0.0; // m/s NED
 		msg.vy = 0.0; // m/s NED
 		msg.vz = 0.0; // m/s NED
 
+		// geometry_msgs::msg::PointStamped point_msg;
+		// point_msg.header.frame_id = "world";
+		// point_msg.header.stamp = this->get_clock()->now();
+		// point_msg.point.x = gps_waypoint_world_coordinate_x;
+		// point_msg.point.y = -gps_waypoint_world_coordinate_y;
+		// point_msg.point.z = -gps_waypoint_world_coordinate_z;
+		// _goal_point_pub->publish(point_msg);
+
 		OffboardControl::publish_setpoint(msg);
 
-		if ( (abs(abs(_drone_pose.position(0))-abs(map_pos_array[map_pos_cnt][0]))<0.5) && 
-			(abs(abs(_drone_pose.position(1))-abs(map_pos_array[map_pos_cnt][1]))<0.5) && 
-			(abs(abs(_drone_pose.position(2))-abs(map_pos_array[map_pos_cnt][2]))<0.5) ) {
-
-			map_pos_cnt++;	
+		float threshold = 0.25;
+		if ( (_drone_pose.position(0) - gps_waypoint_world_coordinate_x) < threshold &&
+			 (-1*_drone_pose.position(1) - gps_waypoint_world_coordinate_y) < threshold &&
+			 (-1*_drone_pose.position(2) - gps_waypoint_world_coordinate_z) < threshold &&
+			 (_drone_pose.position(0) - gps_waypoint_world_coordinate_x) > -threshold &&
+			 (-1*_drone_pose.position(1) - gps_waypoint_world_coordinate_y) > -threshold &&
+			 (-1*_drone_pose.position(2) - gps_waypoint_world_coordinate_z) > -threshold
+		)
+		{
+			map_pos_cnt++;
 		}
+		else {
+			RCLCPP_INFO(this->get_logger(), "\n diff x %f \n", (_drone_pose.position(0) - gps_waypoint_world_coordinate_x));
+			RCLCPP_INFO(this->get_logger(), "\n diff y %f \n", (-1*_drone_pose.position(1) - gps_waypoint_world_coordinate_y));
+			RCLCPP_INFO(this->get_logger(), "\n diff z %f \n", (-1*_drone_pose.position(2) - gps_waypoint_world_coordinate_z));
+		}
+		
+
+
+		// if ( (abs(abs(_drone_pose.position(0))-abs(gps_waypoint_world_coordinate_x))<0.5) && 
+		// 	(abs(abs(_drone_pose.position(1))-abs(gps_waypoint_world_coordinate_y))<0.5) && 
+		// 	(abs(abs(_drone_pose.position(2))-abs(map_pos_array[map_pos_cnt][2]))<0.5) ) {
+
+		// 	map_pos_cnt++;	
+		// }
 
 		return;
 
