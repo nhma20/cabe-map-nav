@@ -232,7 +232,6 @@ private:
 	std::mutex _powerline_mutex;
 
 	pose_t _drone_pose; // in world coordinates North-West-Up
-	orientation_t _drone_orientation; // RPY
 	pose_t _alignment_pose;
 
 	float _hover_height = 2;
@@ -286,6 +285,7 @@ void OffboardControl::publish_path() {
 
 	} _drone_pose_mutex.unlock();
 
+	static float path_segment_length = 0.5; // meters
 
 	if (_in_offboard)
 	{
@@ -299,7 +299,7 @@ void OffboardControl::publish_path() {
 			dist = sqrt(pow(x_diff, 2) + pow(y_diff, 2) + pow(z_diff, 2));
 		}		
 
-		if(dist > 1.0)
+		if(dist > path_segment_length)
 		{
 			offboard_path_msg.poses.push_back(pose_msg);
 			_offboard_path_pub->publish(offboard_path_msg);
@@ -318,7 +318,7 @@ void OffboardControl::publish_path() {
 			dist = sqrt(pow(x_diff, 2) + pow(y_diff, 2) + pow(z_diff, 2));
 		}	
 
-		if(dist > 1.0)
+		if(dist > path_segment_length)
 		{
 			manual_path_msg.poses.push_back(pose_msg);
 			_manual_path_pub->publish(manual_path_msg);
@@ -452,15 +452,6 @@ void OffboardControl::latlon_to_xy(double lat1, double lon1, double lat2, double
     x_out = (float)(cos(p*bearing) * distance);
     y_out = (float)(sin(p*bearing) * distance);
 
-	// RCLCPP_INFO(this->get_logger(), "\n lat1 %f \n", lat1);
-	// RCLCPP_INFO(this->get_logger(), "\n lon1 %f \n", lon1);
-	// RCLCPP_INFO(this->get_logger(), "\n lat2 %f \n", lat2);
-	// RCLCPP_INFO(this->get_logger(), "\n lon2 %f \n", lon2);
-	// RCLCPP_INFO(this->get_logger(), "\n p %f \n", p);
-	// RCLCPP_INFO(this->get_logger(), "\n a %f \n", a);
-	// RCLCPP_INFO(this->get_logger(), "\n b %f \n", b);
-	// RCLCPP_INFO(this->get_logger(), "\n distance %f \n", distance);
-
 }
 
 
@@ -500,30 +491,35 @@ void OffboardControl::flight_state_machine() {
 		this->arm();
 	}
 
-	// static float map_pos_array[5][3] = {{0.0, 0.0, -2.5}, 
-	// 									{4.3789191246032715, -0.15495994687080383, -2.5}, 
-	// 									{4.381380558013916, -0.23446471989154816, -13.59790325164795},
-	// 									{-0.6918609142303467, -1.7010489702224731, -13.61758804321289}, 
-	// 									{-4.006442546844482, 14.712209701538086, -13.61367416381836}};
 
-	// lat, long ,-z
-	static double map_pos_array[6][3] = {{_global_latitude, _global_longitude, 2.5}, // takeoff
-										{55.47029419, 10.32891724, 2.5}, // north of middle of span, 2.5m
-										{55.47029419, 10.32891724, 13.5}, // north of middle of span, 13.5m
-										{55.47018588, 10.32896105, 13.5}, // middle of span, 13.5m
-										{55.47012786, 10.32933877, 13.5}, // beyond east tower, 13.5m
-										{55.47023526, 10.32855140, 13.5}}; // beyond west tower, 13.5m
+
+	/* ----- perform mapping based on approximate GPS waypoints ----- */
+
+	static float takeoff_yaw = 9999.9;
+
+	if (takeoff_yaw > 9999.0) {
+
+		takeoff_yaw = -quatToEul(_drone_pose.quaternion)(2);
+
+	}
+
+		
+
+	// lat, long, z, yaw
+	static double map_pos_array[5][4] = {{_global_latitude, _global_longitude, 2.5, takeoff_yaw}, // takeoff
+										{55.47029419, 10.32891724, 2.5, -1.195}, // north of middle of span, 2.5m
+										{55.47029419, 10.32891724, 13.5, -1.195}, // north of middle of span, 13.5m
+										{55.47018588, 10.32896105, 13.5, -1.195}, // middle of span, 13.5m
+										{55.47012786, 10.32933877, 13.5, -1.195}};//, // beyond east tower, 13.5m
+										//{55.47023526, 10.32855140, 13.5}}; // beyond west tower, 13.5m
 
 	static int map_pos_cnt = 0;
-
-	RCLCPP_INFO(this->get_logger(), "\n \nmap_pos_cnt %d \n", map_pos_cnt);
 
 	if (map_pos_cnt < (int)(sizeof(map_pos_array)/sizeof(map_pos_array[0]))) { //6
 
 		// subscribe to vehicle_global_position
 		// use latlon_to_xy() to find XY offset between target latlong (from array) and current latlong
 		// translate local XY offset into world frame (waypoint_xy + world_xy)?
-		// create message like before
 
 		float gps_local_x = 0.0;
 		float gps_local_y = 0.0;
@@ -535,17 +531,14 @@ void OffboardControl::flight_state_machine() {
 		float gps_waypoint_world_coordinate_x = _drone_pose.position(0) + gps_local_x;
 		float gps_waypoint_world_coordinate_y = -1*_drone_pose.position(1) + gps_local_y;
 		float gps_waypoint_world_coordinate_z = -1*map_pos_array[map_pos_cnt][2];
-
-		// RCLCPP_INFO(this->get_logger(), "\n gps_world_x %f \n", gps_waypoint_world_coordinate_x);
-		// RCLCPP_INFO(this->get_logger(), "\n gps_world_y %f \n", gps_waypoint_world_coordinate_y);
-
+		float gps_waypoint_world_yaw = map_pos_array[map_pos_cnt][3];
 
 		px4_msgs::msg::TrajectorySetpoint msg{};
 		msg.timestamp = _timestamp.load();
 		msg.x = gps_waypoint_world_coordinate_x; // in meters NED
 		msg.y = gps_waypoint_world_coordinate_y; // in meters NED
 		msg.z = gps_waypoint_world_coordinate_z; // in meters NED
-		msg.yaw = -1.095; // rotation around z NED in radians
+		msg.yaw = gps_waypoint_world_yaw; // rotation around z NED in radians
 		msg.vx = 0.0; // m/s NED
 		msg.vy = 0.0; // m/s NED
 		msg.vz = 0.0; // m/s NED
@@ -560,35 +553,38 @@ void OffboardControl::flight_state_machine() {
 
 		OffboardControl::publish_setpoint(msg);
 
+		// XYZ delta to goal waypoint (incl. ENU to NED)
+		float x_diff = _drone_pose.position(0) - gps_waypoint_world_coordinate_x;
+		float y_diff = -1*_drone_pose.position(1) - gps_waypoint_world_coordinate_y;
+		float z_diff = -1*_drone_pose.position(2) - gps_waypoint_world_coordinate_z;
+
 		float threshold = 0.25;
-		if ( (_drone_pose.position(0) - gps_waypoint_world_coordinate_x) < threshold &&
-			 (-1*_drone_pose.position(1) - gps_waypoint_world_coordinate_y) < threshold &&
-			 (-1*_drone_pose.position(2) - gps_waypoint_world_coordinate_z) < threshold &&
-			 (_drone_pose.position(0) - gps_waypoint_world_coordinate_x) > -threshold &&
-			 (-1*_drone_pose.position(1) - gps_waypoint_world_coordinate_y) > -threshold &&
-			 (-1*_drone_pose.position(2) - gps_waypoint_world_coordinate_z) > -threshold
+		if ( x_diff < threshold &&
+			 y_diff < threshold &&
+			 z_diff < threshold &&
+			 x_diff > -threshold &&
+			 y_diff > -threshold &&
+			 z_diff > -threshold
 		)
 		{
 			map_pos_cnt++;
 		}
 		else {
-			RCLCPP_INFO(this->get_logger(), "\n diff x %f \n", (_drone_pose.position(0) - gps_waypoint_world_coordinate_x));
-			RCLCPP_INFO(this->get_logger(), "\n diff y %f \n", (-1*_drone_pose.position(1) - gps_waypoint_world_coordinate_y));
-			RCLCPP_INFO(this->get_logger(), "\n diff z %f \n", (-1*_drone_pose.position(2) - gps_waypoint_world_coordinate_z));
+			RCLCPP_INFO(this->get_logger(), "\n Goal delta to position %d: \n X: %f \n Y: %f \n Z: %f \n", map_pos_cnt, x_diff, y_diff, z_diff);
 		}
-		
-
-
-		// if ( (abs(abs(_drone_pose.position(0))-abs(gps_waypoint_world_coordinate_x))<0.5) && 
-		// 	(abs(abs(_drone_pose.position(1))-abs(gps_waypoint_world_coordinate_y))<0.5) && 
-		// 	(abs(abs(_drone_pose.position(2))-abs(map_pos_array[map_pos_cnt][2]))<0.5) ) {
-
-		// 	map_pos_cnt++;	
-		// }
 
 		return;
 
 	}
+
+
+	/* ----- get tower position, calculate damper plane, plan path ----- */
+
+
+
+
+	/* ----- fly pre-planned damper path ----- */
+
 
 	this->get_parameter("take_off_to_height", _takeoff_height);
 	if(_takeoff_height > 1){
@@ -602,7 +598,7 @@ void OffboardControl::flight_state_machine() {
 	}
 
 	else if(_counter < 1000000000){
-		if(_counter == 10 && _launch_with_debug > 0){
+		if(_counter == 0 && _launch_with_debug > 0){
 			RCLCPP_INFO(this->get_logger(), "\n \nBeginning alignment \n");
 		}
 		publish_tracking_setpoint();
@@ -647,8 +643,6 @@ void OffboardControl::update_drone_pose() {
 		_drone_pose.quaternion(1) = t.transform.rotation.y;
 		_drone_pose.quaternion(2) = t.transform.rotation.z;
 		_drone_pose.quaternion(3) = t.transform.rotation.w;
-
-		// RCLCPP_INFO(this->get_logger(), "Yaw: %f", _drone_orientation(2));
 
 	} _drone_pose_mutex.unlock();
 
@@ -754,14 +748,41 @@ void OffboardControl::publish_offboard_control_mode() const {
  */
 void OffboardControl::publish_tracking_setpoint() {
 
+	static bool print_nothing_align_with_once = false;
+
 	if (_alignment_pose.position(0) == 0 && 
 		_alignment_pose.position(1) == 0 && 
 		_alignment_pose.position(2) == 0)
 	{
-		RCLCPP_INFO(this->get_logger(), "Nothing to align with - holding position");
-		OffboardControl::publish_hold_setpoint();
+
+		static px4_msgs::msg::TrajectorySetpoint msg{};
+
+		if (print_nothing_align_with_once == false)
+		{		
+			print_nothing_align_with_once = true;
+
+			RCLCPP_INFO(this->get_logger(), "Nothing to align with - holding position");
+
+			static pose_eul_t NWU_to_NED_pose;	
+
+			NWU_to_NED_pose.position = _drone_pose.position; 
+			NWU_to_NED_pose.orientation = quatToEul(_drone_pose.quaternion);
+			NWU_to_NED_pose = pose_NWU_to_NED(NWU_to_NED_pose);
+
+			msg.timestamp = _timestamp.load();
+			msg.x = NWU_to_NED_pose.position(0); 		// in meters NED
+			msg.y = NWU_to_NED_pose.position(1);
+			msg.z = NWU_to_NED_pose.position(2);
+			// YAW is cropped to 0-PI for some reason, uncrop to 0-2PI based on if ROLL is 0 or PI
+			msg.yaw = (float)NWU_to_NED_pose.orientation(2);
+
+		}
+
+		OffboardControl::publish_setpoint(msg);
 		return;
 	}
+
+	print_nothing_align_with_once = false;
 	
 
 	float pos_frac;

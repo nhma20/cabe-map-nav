@@ -172,7 +172,7 @@ class RadarPCLFilter : public rclcpp::Node
 			tracked_powerlines_pub = this->create_publisher<radar_cable_follower_msgs::msg::TrackedPowerlines>("/tracked_powerlines", 10);
 
 			debug_point = this->create_publisher<geometry_msgs::msg::PointStamped>("/debug_point", 10);
-			debug_pose = this->create_publisher<geometry_msgs::msg::PoseStamped>("/debug_pose", 10);
+			_tower_pose_pub = this->create_publisher<geometry_msgs::msg::PoseStamped>("/tower_pose", 10);
 
 			tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
 			transform_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
@@ -241,7 +241,7 @@ class RadarPCLFilter : public rclcpp::Node
 		rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr vis_tracked_powerlines_pub;
 
 		rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr debug_point;
-		rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr debug_pose;
+		rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr _tower_pose_pub;
 
 		rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr raw_pcl_subscription_;
 
@@ -279,6 +279,7 @@ class RadarPCLFilter : public rclcpp::Node
 		float _radar_azimuth_fov;
 		bool _reset_global_point_cloud;
 		int _plus_or_minus_yaw;
+		pose_t _tower_pose;
 
 		float _global_powerline_2d_angle = 0.0;
 
@@ -347,6 +348,8 @@ class RadarPCLFilter : public rclcpp::Node
 		void update_powerline_poses();
 
 		void update_tf();
+
+		void offset_tower_plane_and_points(pcl::PointCloud<pcl::PointXYZ>::Ptr search_cloud, pose_t tower_pose);
 };
 
 
@@ -966,6 +969,29 @@ std::vector<line_model_t> RadarPCLFilter::follow_point_extraction(pcl::PointClou
 	line_model_vec.push_back(line_model);
 
 	_line_models = line_model_vec;
+	
+	_tower_pose.position = line_model.position;
+	// _tower_pose.position(1) = line_model.position(1);
+	// _tower_pose.position(2) = line_model.position(2);
+	_tower_pose.quaternion = line_model.quaternion;
+
+
+
+	// tower pose
+	auto track_pose_msg = geometry_msgs::msg::PoseStamped();
+	track_pose_msg.header = std_msgs::msg::Header();
+	track_pose_msg.header.stamp = this->now();
+	track_pose_msg.header.frame_id = "world";
+	track_pose_msg.pose.orientation.x = line_model.quaternion(0);
+	track_pose_msg.pose.orientation.y = line_model.quaternion(1);
+	track_pose_msg.pose.orientation.z = line_model.quaternion(2);
+	track_pose_msg.pose.orientation.w = line_model.quaternion(3);
+	track_pose_msg.pose.position.x = line_model.position(0);
+	track_pose_msg.pose.position.y = line_model.position(1);
+	track_pose_msg.pose.position.z = line_model.position(2);
+	_tower_pose_pub->publish(track_pose_msg);
+	
+
 
 	}
 
@@ -2137,6 +2163,20 @@ void RadarPCLFilter::read_pointcloud(const sensor_msgs::msg::PointCloud2::Shared
 	}
 }   
 
+
+void RadarPCLFilter::offset_tower_plane_and_points(pcl::PointCloud<pcl::PointXYZ>::Ptr search_cloud, pose_t tower_pose) {
+
+	/*
+	- Define plane offset X m from tower in PL direction
+	- Make sure there are cables on this side of tower
+	- Find points closest to plane, project onto plane
+	- Create new pcl message from projected points, publish to OffboardController
+	*/
+
+	int a = 0;
+}
+
+
 void RadarPCLFilter::powerline_detection() {
 
 	this->get_parameter("launch_with_debug", _launch_with_debug);
@@ -2200,14 +2240,16 @@ void RadarPCLFilter::powerline_detection() {
 			{
 				RCLCPP_INFO(this->get_logger(), "Invalid follow method: %s", _line_or_point_follow);
 			}
+
+			// plane offset from tower and closest points in the plane
+			RadarPCLFilter::offset_tower_plane_and_points(_pl_search_cloud, _tower_pose);
 			
 			if (_launch_with_debug > 0)
 			{	
 				auto pcl_msg = sensor_msgs::msg::PointCloud2();
 				RadarPCLFilter::create_pointcloud_msg(_pl_search_cloud, &pcl_msg);
 				output_pointcloud_pub->publish(pcl_msg);  
-			}
-				
+			}			
 		}
 	}
 }
