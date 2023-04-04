@@ -4,6 +4,7 @@
 #include <sensor_msgs/msg/point_field.hpp>
 #include <geometry_msgs/msg/pose.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
+#include "visualization_msgs/msg/marker.hpp"
 #include <px4_msgs/msg/vehicle_odometry.hpp>
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer.h>
@@ -46,6 +47,7 @@
 #include <pcl/sample_consensus/ransac.h>
 #include <pcl/sample_consensus/sac_model_line.h>
 #include <pcl/segmentation/sac_segmentation.h>
+#include <pcl/segmentation/extract_clusters.h>
 
 
 
@@ -173,6 +175,10 @@ class RadarPCLFilter : public rclcpp::Node
 
 			debug_point = this->create_publisher<geometry_msgs::msg::PointStamped>("/debug_point", 10);
 			_tower_pose_pub = this->create_publisher<geometry_msgs::msg::PoseStamped>("/tower_pose", 10);
+			_damper_plane_pub = this->create_publisher<visualization_msgs::msg::Marker>("/damper_plane", 10);
+			_plane_pointcloud_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>("/plane_pcl", 10);
+			_plane_line_points_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>("/plane_lines_pcl", 10);
+			
 
 			tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
 			transform_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
@@ -242,6 +248,9 @@ class RadarPCLFilter : public rclcpp::Node
 
 		rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr debug_point;
 		rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr _tower_pose_pub;
+		rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr _damper_plane_pub;
+		rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr _plane_pointcloud_pub;
+		rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr _plane_line_points_pub;
 
 		rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr raw_pcl_subscription_;
 
@@ -2168,12 +2177,245 @@ void RadarPCLFilter::offset_tower_plane_and_points(pcl::PointCloud<pcl::PointXYZ
 
 	/*
 	- Define plane offset X m from tower in PL direction
-	- Make sure there are cables on this side of tower
+	- (Make sure there are cables on this side of tower)
 	- Find points closest to plane, project onto plane
+		- Iterate over all points in cloud
+		- Check XY distance from plane projected onto ground
+		- Separate into heights (maybe 0.5m?)
 	- Create new pcl message from projected points, publish to OffboardController
+	- Add interactivity to marker to be able to press it to fly to it
 	*/
 
-	int a = 0;
+	// parameters
+	float offset_distance = 3.0; // distance from tower to damper (meters)
+	float marker_above_line = 5.0; // rviz2 visualization extending above top powerline (meters)
+	float plane_width = 10.0; // width across powerlines to search for nearest points
+	float plane_search_depth = 1.5; // distance along powerlines to search for nearest points
+
+
+
+	// get RPY from tower pose
+	orientation_t rpy = quatToEul(tower_pose.quaternion);
+
+	float tmp_yaw = rpy(2);
+	float tmp_yaw_vis = rpy(2) + 1.57079633;
+	float tmp_pitch = 1.57079633;
+	float tmp_roll = 0.0;
+
+	// calculate rotated offset from tower
+	vector_t offset_distance_vector;
+	offset_distance_vector(0) = offset_distance;
+	offset_distance_vector(1) = 0.0;
+	offset_distance_vector(2) = 0.0;
+
+	orientation_t offset_rotation;
+	offset_rotation(0) = 0.0;
+	offset_rotation(1) = 0.0;
+	offset_rotation(2) = tmp_yaw;
+
+	rotation_matrix_t rotation_matrix = eulToR(offset_rotation);
+
+	vector_t rotated_offset_distance_vector = rotateVector(rotation_matrix, offset_distance_vector);
+
+	point_t tower_plane_position = tower_pose.position + rotated_offset_distance_vector;
+
+	// visualize with plane marker
+	visualization_msgs::msg::Marker marker;
+	marker.header = std_msgs::msg::Header();
+	marker.header.stamp = this->now();
+	marker.header.frame_id = "world";
+
+	marker.ns = "damper_plane";
+	marker.id = 0;
+
+	marker.type = visualization_msgs::msg::Marker::CUBE;
+
+	marker.action = visualization_msgs::msg::Marker::ADD;
+
+	orientation_t tmp_rpy; // not sure why this order, probably marker definition
+	tmp_rpy(2) = tmp_roll;
+	tmp_rpy(0) = tmp_pitch;
+	tmp_rpy(1) = tmp_yaw_vis;
+
+	tower_pose.quaternion = eulToQuat(tmp_rpy);
+
+	marker.pose.orientation.x = tower_pose.quaternion(0);
+	marker.pose.orientation.y = tower_pose.quaternion(1);
+	marker.pose.orientation.z = tower_pose.quaternion(2);
+	marker.pose.orientation.w = tower_pose.quaternion(3);
+	marker.pose.position.x = tower_plane_position(0);
+	marker.pose.position.y = tower_plane_position(1);
+	marker.pose.position.z = (tower_plane_position(2) + marker_above_line) / 2; // to fit plane from ground to above line
+
+	// Set the scale of the marker -- 1x1x1 here means 1m on a side
+	marker.scale.x = plane_width;
+	marker.scale.y = tower_plane_position(2) + marker_above_line;
+	marker.scale.z = 0.10;
+	// Set the color -- be sure to set alpha to something non-zero!
+	marker.color.r = 0.0f;
+	marker.color.g = 1.0f;
+	marker.color.b = 0.0f;
+	marker.color.a = 0.6;
+
+	marker.lifetime = rclcpp::Duration::from_seconds(0);
+
+	_damper_plane_pub->publish(marker);
+
+
+	// crop out points around plane
+	pcl::CropBox<pcl::PointXYZ> boxFilter;
+
+	float minX = - plane_search_depth;
+	float minY = - plane_width / 2;
+	float minZ = 0;
+	float maxX = plane_search_depth;
+	float maxY = plane_width / 2;
+	float maxZ = 100;
+
+	boxFilter.setMin(Eigen::Vector4f(minX, minY, minZ, 1.0));
+	boxFilter.setMax(Eigen::Vector4f(maxX, maxY, maxZ, 1.0));
+
+	boxFilter.setTranslation(Eigen::Vector3f(tower_plane_position(0), tower_plane_position(1), 0.0));
+
+	float angle = tmp_yaw;
+	boxFilter.setRotation(Eigen::Vector3f(0.0f, 0.0f, angle));
+
+	boxFilter.setInputCloud(search_cloud);
+
+	pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_cropped(new pcl::PointCloud<pcl::PointXYZ>);
+	boxFilter.filter(*cloud_cropped);
+
+	auto pcl_msg = sensor_msgs::msg::PointCloud2(); 
+	RadarPCLFilter::create_pointcloud_msg(cloud_cropped, &pcl_msg);
+	if (cloud_cropped->size() > 0)
+	{
+		_plane_pointcloud_pub->publish(pcl_msg);
+	}
+
+	
+	// Euclidean clustering to separate lines within plane search boundary
+	pcl::search::KdTree<pcl::PointXYZ>::Ptr tree (new pcl::search::KdTree<pcl::PointXYZ>);
+	tree->setInputCloud (cloud_cropped);
+
+	std::vector<pcl::PointIndices> cluster_indices;
+	pcl::EuclideanClusterExtraction<pcl::PointXYZ> ec;
+	ec.setClusterTolerance (1.0); // 1m
+	ec.setMinClusterSize (5);
+	ec.setMaxClusterSize (25000);
+	ec.setSearchMethod (tree);
+	ec.setInputCloud (cloud_cropped);
+	ec.extract (cluster_indices);
+
+	std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> cluster_cloud_vector;
+
+	int j = 0;
+	for (const auto& cluster : cluster_indices)
+	{
+		pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_cluster (new pcl::PointCloud<pcl::PointXYZ>);
+		for (const auto& idx : cluster.indices) {
+			cloud_cluster->push_back((*cloud_cropped)[idx]);
+		}
+		cloud_cluster->width = cloud_cluster->size ();
+		cloud_cluster->height = 1;
+		cloud_cluster->is_dense = true;
+
+		// RCLCPP_INFO(this->get_logger(), "\nCluster %d contains %d data points\n", j, cloud_cluster->size());
+
+		cluster_cloud_vector.push_back(cloud_cluster);
+
+		j++;
+	}
+
+
+	// line fit on each cluster, then project onto plane
+	static pcl::ModelCoefficients::Ptr coefficients (new pcl::ModelCoefficients);
+	static pcl::PointIndices::Ptr inliers (new pcl::PointIndices);
+	static pcl::SACSegmentation<pcl::PointXYZ> seg;
+
+	seg.setOptimizeCoefficients (true);
+	seg.setModelType (pcl::SACMODEL_LINE);
+	seg.setMethodType (pcl::SAC_RANSAC);
+	seg.setDistanceThreshold ((float)_line_model_distance_thresh);
+
+
+	pcl::PointCloud<pcl::PointXYZ>::Ptr plane_points (new pcl::PointCloud<pcl::PointXYZ>);
+
+	for (int i = 0; i < j; i++)
+	{
+		RCLCPP_INFO(this->get_logger(), "\nCluster %d contains %d data points\n", i, cluster_cloud_vector.at(i)->size());
+
+		pcl::ExtractIndices<pcl::PointXYZ> extract;
+
+		seg.setInputCloud (cluster_cloud_vector.at(i));
+		seg.segment (*inliers, *coefficients);
+
+		pose_t pl_segment_pose;
+		pl_segment_pose.position(0) = coefficients->values[0];
+		pl_segment_pose.position(1) = coefficients->values[1];
+		pl_segment_pose.position(2) = coefficients->values[2];
+
+
+		/* --- Does not take into account the pitch of the line when projecting --- 
+		   --- Works well because the raw points from line fit are centered on each segment */
+		plane_t damper_proj_plane = create_plane(_line_models.at(0).quaternion, (point_t)tower_plane_position);
+
+		point_t projected_XY_point = projectPointOnPlane((point_t) pl_segment_pose.position, damper_proj_plane);
+
+		pcl::PointXYZ tmp_point;
+		tmp_point.x = projected_XY_point(0);
+		tmp_point.y = projected_XY_point(1);
+		tmp_point.z = projected_XY_point(2);
+
+		plane_points->push_back(tmp_point);
+
+
+
+		/* --- Attempts to take into account the pitch of the line during projection - Looks worse */
+		// plane_t damper_proj_plane = create_plane(_line_models.at(0).quaternion, (point_t)tower_plane_position);
+
+		// point_t dir_vector;
+		// dir_vector(0) = coefficients->values[0];
+		// dir_vector(1) = coefficients->values[1];
+		// dir_vector(2) = coefficients->values[2];
+
+		// point_t diff = damper_proj_plane.p - (point_t) pl_segment_pose.position;
+		// float dist = diff.dot(damper_proj_plane.normal);
+		// float l_dot_n = dir_vector.dot(damper_proj_plane.normal);
+		// float d = dist / l_dot_n;
+
+		// point_t projected_XYZ_point;
+		// projected_XYZ_point = (point_t)pl_segment_pose.position + (point_t)dir_vector*d;
+
+		// pcl::PointXYZ tmp_point;
+		// tmp_point.x = projected_XYZ_point(0);
+		// tmp_point.y = projected_XYZ_point(1);
+		// tmp_point.z = projected_XYZ_point(2);
+
+		// plane_points->push_back(tmp_point);
+
+
+
+		/* --- Raw points from line fit --- */
+		// pcl::PointXYZ tmp_point;
+		// tmp_point.x = pl_segment_pose.position(0);
+		// tmp_point.y = pl_segment_pose.position(1);
+		// tmp_point.z = pl_segment_pose.position(2);
+
+		// plane_points->push_back(tmp_point);
+
+	}
+
+	RCLCPP_INFO(this->get_logger(), "\nPlane points contains %d points\n", plane_points->size());
+
+
+	auto plane_lines_pcl_msg = sensor_msgs::msg::PointCloud2(); 
+	RadarPCLFilter::create_pointcloud_msg(plane_points, &plane_lines_pcl_msg);
+	if (plane_points->size() > 0)
+	{
+		_plane_line_points_pub->publish(plane_lines_pcl_msg);
+	}
+	
+
 }
 
 

@@ -5,7 +5,7 @@ radar_pcl_filter_node:
     cluster_crop_radius: 20.0
     ground_threshold: 1.0
     line_model_inlier_threshold: 10.0
-    line_model_distance_threshold: 0.25
+    line_model_distance_threshold: 0.5
     radar_elevation_fov: 40.0
     radar_azimuth_fov: 90.0
     line_or_point_follow: "point"

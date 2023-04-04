@@ -38,6 +38,7 @@ find_package(tf2_ros REQUIRED)
 find_package(tf2_msgs REQUIRED)
 find_package(image_transport REQUIRED)
 find_package(radar_cable_follower_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
 
 find_package(PCL 1.2 REQUIRED)
 
@@ -90,6 +91,7 @@ ${PCL_LIBRARIES}
   ament_target_dependencies(radar_pointcloud_filter
   rclcpp
   sensor_msgs
+  visualization_msgs
   px4_msgs
   tf2
   tf2_ros

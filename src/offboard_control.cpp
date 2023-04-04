@@ -502,7 +502,6 @@ void OffboardControl::flight_state_machine() {
 		takeoff_yaw = -quatToEul(_drone_pose.quaternion)(2);
 
 	}
-
 		
 
 	// lat, long, z, yaw
@@ -580,7 +579,7 @@ void OffboardControl::flight_state_machine() {
 
 	/* ----- get tower position, calculate damper plane, plan path ----- */
 
-
+	
 
 
 	/* ----- fly pre-planned damper path ----- */
