@@ -11,6 +11,8 @@
 // Defines
 /*****************************************************************************/
 
+typedef Eigen::Vector2f point2d_t;
+
 typedef Eigen::Vector3f point_t;
 
 typedef Eigen::Vector3f orientation_t;
@@ -96,6 +98,8 @@ quat_t matToQuat(rotation_matrix_t R);
 quat_t eulToQuat(orientation_t eul);
 
 transform_t getTransformMatrix(vector_t vec, quat_t quat);
+
+transform_t getInverseTransformMatrix(vector_t vec, quat_t quat);
 
 plane_t create_plane(quat_t powerline_direction, point_t drone_xyz);
 

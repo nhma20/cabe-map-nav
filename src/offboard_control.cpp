@@ -45,6 +45,8 @@
 #include <geometry_msgs/msg/point.hpp>
 #include <geometry_msgs/msg/point_stamped.hpp>
 
+#include <sensor_msgs/msg/point_cloud2.hpp>
+
 #include <std_msgs/msg/int32.hpp>
 
 #include <nav_msgs/msg/path.hpp>
@@ -55,7 +57,13 @@
 #include <tf2_ros/buffer.h>
 #include <tf2/exceptions.h>
 
+#include <pcl/point_types.h>
+#include <pcl/point_cloud.h>
+#include <pcl/common/transforms.h>
+#include <pcl/common/angles.h>
+
 #include <stdint.h>
+#include <stdlib.h> 
 #include <math.h>  
 #include <limits>
 #include <mutex>
@@ -63,6 +71,8 @@
 #include <iostream>
 
 #include "geometry.h"
+
+#include "../include/AStar.hpp"
 
 
 #define PI 3.14159265
@@ -133,12 +143,33 @@ public:
 		_goal_point_pub = this->create_publisher<geometry_msgs::msg::PointStamped>("/goal_point", 10);
 
 
-			_global_position_sub = this->create_subscription<px4_msgs::msg::VehicleGlobalPosition>(
-			"/fmu/vehicle_global_position/out",	10,
-            [this](px4_msgs::msg::VehicleGlobalPosition::ConstSharedPtr msg) {
-				_global_latitude = (float)msg->lat; // degrees
-				_global_longitude = (float)msg->lon; // degrees
-			}); 
+		_global_position_sub = this->create_subscription<px4_msgs::msg::VehicleGlobalPosition>(
+		"/fmu/vehicle_global_position/out",	10,
+		[this](px4_msgs::msg::VehicleGlobalPosition::ConstSharedPtr msg) {
+			_global_latitude = (float)msg->lat; // degrees
+			_global_longitude = (float)msg->lon; // degrees
+		}); 
+
+
+		_plane_line_points_sub = this->create_subscription<sensor_msgs::msg::PointCloud2>(
+		"/plane_lines_pcl",	10,
+		[this](sensor_msgs::msg::PointCloud2::SharedPtr msg) {
+			_plane_line_points_msg = msg;
+		}); 
+
+
+		_plane_pose_sub = this->create_subscription<geometry_msgs::msg::PoseStamped>(
+		"/plane_pose",	10,
+		[this](geometry_msgs::msg::PoseStamped::SharedPtr msg) {
+			_plane_pose_msg = msg;
+		}); 
+
+
+		_transformed_plane_pcl_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>("/trans_plane_pcl", 10);
+
+
+		_plane_path_pub = this->create_publisher<nav_msgs::msg::Path>("/plane_path", 10);
+
 
 
 		if(_launch_with_debug > 0)
@@ -195,6 +226,8 @@ private:
 	rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr _manual_path_pub;
 	rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr _offboard_path_pub;
 	rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr _goal_point_pub;
+	rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr _transformed_plane_pcl_pub;
+	rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr _plane_path_pub;
 
 	rclcpp::Subscription<radar_cable_follower_msgs::msg::TrackedPowerlines>::SharedPtr _powerline_pose_sub;
 	rclcpp::Subscription<px4_msgs::msg::Timesync>::SharedPtr _timesync_sub;
@@ -202,6 +235,8 @@ private:
 	rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr _selected_id_sub;
 	rclcpp::Subscription<px4_msgs::msg::RcChannels>::SharedPtr _rc_channels_sub;
 	rclcpp::Subscription<px4_msgs::msg::VehicleGlobalPosition>::SharedPtr _global_position_sub;
+	rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr _plane_line_points_sub;
+	rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr _plane_pose_sub;
 
 	std::shared_ptr<tf2_ros::TransformListener> transform_listener_{nullptr};
 	std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
@@ -239,6 +274,9 @@ private:
 	float _global_latitude = 0.0; // degrees
 	float _global_longitude = 0.0; // degrees
 
+	sensor_msgs::msg::PointCloud2::SharedPtr _plane_line_points_msg;
+	geometry_msgs::msg::PoseStamped::SharedPtr _plane_pose_msg;
+
 	void publish_path();
 	void mission_state_machine();
 	void flight_state_machine();
@@ -253,6 +291,11 @@ private:
 				     float param2 = 0.0) const;
 	void world_to_points();
 	void latlon_to_xy(double lat1, double lon1, double lat2, double lon2, float & x_out, float & y_out);
+	void read_pointcloud(const sensor_msgs::msg::PointCloud2::SharedPtr msg, 
+										pcl::PointCloud<pcl::PointXYZ>::Ptr cloud);
+	void create_pointcloud_msg(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, sensor_msgs::msg::PointCloud2 * pcl_msg);
+	void pathplanner(point2d_t point_start, point2d_t point_goal, pcl::PointCloud<pcl::PointXYZ>::Ptr transformed_plane_points,
+										pcl::PointCloud<pcl::PointXYZ>::Ptr path_pcl);
 };
 
 
@@ -455,6 +498,260 @@ void OffboardControl::latlon_to_xy(double lat1, double lon1, double lat2, double
 }
 
 
+void OffboardControl::create_pointcloud_msg(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, sensor_msgs::msg::PointCloud2 * pcl_msg) {
+
+  // create PointCloud2 msg
+	//https://github.com/ros-drivers/velodyne/blob/master/velodyne_laserscan/tests/system.cpp
+	int pcl_size = cloud->size();
+	auto pcl2_msg = sensor_msgs::msg::PointCloud2();
+	const uint32_t POINT_STEP = 12;
+
+	pcl_msg->header = std_msgs::msg::Header();
+	pcl_msg->header.stamp = this->now();
+	std::string frameID = "world";
+	pcl_msg->header.frame_id = frameID;
+	pcl_msg->fields.resize(3);
+	pcl_msg->fields[0].name = 'x';
+	pcl_msg->fields[0].offset = 0;
+	pcl_msg->fields[0].datatype = sensor_msgs::msg::PointField::FLOAT32;
+	pcl_msg->fields[0].count = 1;
+	pcl_msg->fields[1].name = 'y';
+	pcl_msg->fields[1].offset = 4;
+	pcl_msg->fields[1].datatype = sensor_msgs::msg::PointField::FLOAT32;
+	pcl_msg->fields[1].count = 1;
+	pcl_msg->fields[2].name = 'z';
+	pcl_msg->fields[2].offset = 8;
+	pcl_msg->fields[2].datatype = sensor_msgs::msg::PointField::FLOAT32;
+	pcl_msg->fields[2].count = 1;
+
+	if(pcl_size > 0){
+		pcl_msg->data.resize(std::max((size_t)1, (size_t)pcl_size) * POINT_STEP, 0x00);
+	} else {
+        return;
+    }
+
+	pcl_msg->point_step = POINT_STEP; // size (bytes) of 1 point (float32 * dimensions (3 when xyz))
+	pcl_msg->row_step = pcl_msg->data.size();//pcl_msg->point_step * pcl_msg->width; // only 1 row because unordered
+	pcl_msg->height = 1;  // because unordered cloud
+	pcl_msg->width = pcl_msg->row_step / POINT_STEP; // number of points in cloud
+	pcl_msg->is_dense = false; // there may be invalid points
+
+	// fill PointCloud2 msg data
+	uint8_t *ptr = pcl_msg->data.data();
+
+	for (size_t i = 0; i < (size_t)pcl_size; i++)
+	{
+		pcl::PointXYZ point = (*cloud)[i];
+
+        *(reinterpret_cast<float*>(ptr + 0)) = point.x;
+        *(reinterpret_cast<float*>(ptr + 4)) = point.y;
+        *(reinterpret_cast<float*>(ptr + 8)) = point.z;
+        ptr += POINT_STEP;
+	}
+	
+}
+
+
+void OffboardControl::read_pointcloud(const sensor_msgs::msg::PointCloud2::SharedPtr msg, 
+										pcl::PointCloud<pcl::PointXYZ>::Ptr cloud) {
+
+	// read PointCloud2 msg data
+	int pcl_size = msg->width;
+	uint8_t *ptr = msg->data.data();
+	const uint32_t POINT_STEP = 12;
+
+
+	for (size_t i = 0; i < (size_t)pcl_size; i++) 
+	{
+		pcl::PointXYZ point(
+				(float)(*(reinterpret_cast<float*>(ptr + 0))),
+				(float)(*(reinterpret_cast<float*>(ptr + 4))),
+				(float)(*(reinterpret_cast<float*>(ptr + 8)))
+			);
+
+		cloud->push_back(point);	
+
+		ptr += POINT_STEP;
+	}
+}   
+
+
+void OffboardControl::pathplanner(point2d_t point_start, point2d_t point_goal, pcl::PointCloud<pcl::PointXYZ>::Ptr transformed_plane_points,
+										pcl::PointCloud<pcl::PointXYZ>::Ptr path_pcl) {
+
+    // find highest X and Y values
+    float highest_x = 0;
+    float highest_y = 0;
+    float smallest_x = 999999;
+    float smallest_y = 999999;
+
+    for (int i = 0; i < (int)transformed_plane_points->size(); i++)
+    {
+        if (transformed_plane_points->points[i].y > highest_x)
+        {
+            highest_x = transformed_plane_points->points[i].y;
+        }
+
+        if (transformed_plane_points->points[i].z > highest_y)
+        {
+            highest_y = transformed_plane_points->points[i].z;
+        }
+
+        if (transformed_plane_points->points[i].y < smallest_x)
+        {
+            smallest_x = transformed_plane_points->points[i].y;
+        }
+
+        if (transformed_plane_points->points[i].z < smallest_y)
+        {
+            smallest_y = transformed_plane_points->points[i].z;
+        }
+    }
+
+
+	if (point_start(0) > highest_x)
+	{
+		highest_x = point_start(0);
+	}
+
+	if (point_start(1) > highest_y)
+	{
+		highest_y = point_start(1);
+	}
+
+	if (point_start(0) < smallest_x)
+	{
+		smallest_x = point_start(0);
+	}
+
+	if (point_start(1) < smallest_y)
+	{
+		smallest_y = point_start(1);
+	}
+
+
+		if (point_goal(0) > highest_x)
+	{
+		highest_x = point_goal(0);
+	}
+
+	if (point_goal(1) > highest_y)
+	{
+		highest_y = point_goal(1);
+	}
+
+	if (point_goal(0) < smallest_x)
+	{
+		smallest_x = point_goal(0);
+	}
+
+	if (point_goal(1) < smallest_y)
+	{
+		smallest_y = point_goal(1);
+	}
+
+    // Calculate map size in X and Y, scale to 10cm resolution
+    float scale = 2;
+    int size_x = (int)(highest_x*scale) - (int)(smallest_x*scale);
+    int size_y = (int)(highest_y*scale) - (int)(smallest_y*scale);
+
+	RCLCPP_INFO(this->get_logger(), "Path map size: X %d, Y %d", size_x, size_y);
+
+    // Add free-space buffer on each side of map and on top
+    int buffer_size = 3; // 3m buffer 
+    buffer_size = (int)(buffer_size * scale);
+    size_x = size_x + 2*(int)(buffer_size);
+    size_y = size_y + 2*(int)(buffer_size);
+
+    // Create A* map, sized based on powerline coordinates (10cm resolution)
+    AStar::Generator generator;
+    generator.setWorldSize({size_x, size_y});
+
+    // Add collisions based on powerline coordinates
+    std::vector<std::vector<int>> scaled_collision_coordinates;
+    float min_powerline_safety_distance = 1.0; // meters
+    int scaled_safety_distance = (int)ceil(min_powerline_safety_distance * scale);
+
+    // initialize collision coordinates vector with scaled powerline coordinates
+    for (int i = 0; i < (int)transformed_plane_points->size(); i++)
+    {
+        std::vector<int> tmp_vec;
+        tmp_vec.push_back((int)(transformed_plane_points->points[i].y*scale + buffer_size));
+        tmp_vec.push_back((int)(transformed_plane_points->points[i].z*scale));//+buffer_size);
+        scaled_collision_coordinates.push_back(tmp_vec);
+    }
+
+    int collisions_count = 0;
+
+    // Make neighbours collisions as well, iteratively/recursively
+    for (int i  = 0; i < size_y; i++)
+    {
+        for (int j = 0; j < size_x; j++)
+        {
+            for (int k = 0; k < (int)scaled_collision_coordinates.size(); k++)
+            {
+                // calculate distance from each map point to each line coordinate
+                float dist_x = scaled_collision_coordinates.at(k).at(0) - j;
+                float dist_y = scaled_collision_coordinates.at(k).at(1) - i;
+                float euclid_dist = ceil(sqrt( (float)pow(dist_x, 2) + (float)pow(dist_y, 2) ));
+
+                // if a distance is below the safety distance, make collision
+                if (abs(euclid_dist) <= scaled_safety_distance)
+                {
+                    generator.addCollision({j, i});
+					collisions_count++;
+                }
+            }            
+            
+        }
+        
+    }
+
+	RCLCPP_INFO(this->get_logger(), "Pathplanner number of collisions: %d", collisions_count);
+    
+    generator.setHeuristic(AStar::Heuristic::euclidean);
+    generator.setDiagonalMovement(true);
+
+	// scale and add buffer to start and goal points
+	point2d_t scaled_point_start;
+	scaled_point_start(0) = (point_start(0)*scale + buffer_size);
+	scaled_point_start(1) = (point_start(1)*scale);
+
+	// scale and add buffer to start and goal points
+	point2d_t scaled_point_goal;
+	scaled_point_goal(0) = (point_goal(0)*scale + buffer_size);
+	scaled_point_goal(1) = (point_goal(1)*scale);
+
+	RCLCPP_INFO(this->get_logger(), "Generating path ...");
+    auto path = generator.findPath({(int)scaled_point_start(0), (int)scaled_point_start(1)}, {(int)scaled_point_goal(0), (int)scaled_point_goal(1)});
+
+    for(auto& coordinate : path) {
+		RCLCPP_INFO(this->get_logger(), "%d, %d", coordinate.x, coordinate.y);
+
+		pcl::PointXYZ tmp_point;
+		tmp_point.x = 0.0;
+		tmp_point.y = (float)(coordinate.x - buffer_size) / (float)scale;
+		tmp_point.z = (float)coordinate.y / (float)scale;
+
+		path_pcl->push_back(tmp_point);
+    }
+
+	// std::string astar_map = generator.visualize(path); // send to file instead?
+	
+	// // RCLCPP_INFO(this->get_logger(), "Generated map: \n%s", astar_map);
+
+	// // Create and open a text file
+	// std::ofstream MyFile("astar_map.txt");
+
+	// // Write to the file
+	// MyFile << astar_map;
+
+	// // Close the file
+	// MyFile.close();
+
+}
+
+
 void OffboardControl::flight_state_machine() {
 
 	OffboardControl::update_drone_pose();
@@ -542,14 +839,6 @@ void OffboardControl::flight_state_machine() {
 		msg.vy = 0.0; // m/s NED
 		msg.vz = 0.0; // m/s NED
 
-		// geometry_msgs::msg::PointStamped point_msg;
-		// point_msg.header.frame_id = "world";
-		// point_msg.header.stamp = this->get_clock()->now();
-		// point_msg.point.x = gps_waypoint_world_coordinate_x;
-		// point_msg.point.y = -gps_waypoint_world_coordinate_y;
-		// point_msg.point.z = -gps_waypoint_world_coordinate_z;
-		// _goal_point_pub->publish(point_msg);
-
 		OffboardControl::publish_setpoint(msg);
 
 		// XYZ delta to goal waypoint (incl. ENU to NED)
@@ -577,13 +866,168 @@ void OffboardControl::flight_state_machine() {
 	}
 
 
-	/* ----- get tower position, calculate damper plane, plan path ----- */
+	/* ----- (get tower position, calculate damper plane,) plan path ----- */
+	
+	pcl::PointCloud<pcl::PointXYZ>::Ptr plane_line_points (new pcl::PointCloud<pcl::PointXYZ>);
+	
+	OffboardControl::read_pointcloud(_plane_line_points_msg, plane_line_points);
+
+	float lowest_powerline_z = 99999.0;
+	for (int i = 0; i < (int)plane_line_points->size(); i++)
+	{
+		if (plane_line_points->points[i].z < lowest_powerline_z)
+		{
+			lowest_powerline_z = plane_line_points->points[i].z;
+		}
+		
+	}
+
+	homog_transform_t plane_to_world;
+
+	point_t plane_position;
+	plane_position(0) = _plane_pose_msg->pose.position.x;
+	plane_position(1) = _plane_pose_msg->pose.position.y;
+	plane_position(2) = _plane_pose_msg->pose.position.z;
+
+	quat_t plane_quaternion;
+	plane_quaternion(0) = _plane_pose_msg->pose.orientation.x;
+	plane_quaternion(1) = _plane_pose_msg->pose.orientation.y;
+	plane_quaternion(2) = _plane_pose_msg->pose.orientation.z;
+	plane_quaternion(3) = _plane_pose_msg->pose.orientation.w;
 
 	
+	homog_point_t drone_position_in_plane;
+	drone_position_in_plane(0) = plane_position(0);
+	drone_position_in_plane(1) = plane_position(1);
+	drone_position_in_plane(2) = plane_position(2) + _following_distance;
+	drone_position_in_plane(3) = 1;
+
+	// get opposite transform 
+	// https://math.stackexchange.com/questions/3575361/difficulty-understanding-the-inverse-of-a-homogeneous-transformation-matrix
+
+	plane_to_world = getInverseTransformMatrix(plane_position, plane_quaternion);
+
+	drone_position_in_plane = plane_to_world * drone_position_in_plane;
+
+	// transform points in pointcloud
+
+	pcl::PointCloud<pcl::PointXYZ>::Ptr transformed_plane_points (new pcl::PointCloud<pcl::PointXYZ>);
+
+	pcl::transformPointCloud (*plane_line_points, *transformed_plane_points, plane_to_world);
+
+	// auto trans_plane_msg = sensor_msgs::msg::PointCloud2();
+	// OffboardControl::create_pointcloud_msg(transformed_plane_points, &trans_plane_msg);
+	// _transformed_plane_pcl_pub->publish(trans_plane_msg);
+
+
+	float smallest_y = 99999.0;
+	float smallest_z = 99999.0;
+	for (int i = 0; i < (int)transformed_plane_points->size(); i++)
+	{
+		if( transformed_plane_points->points[i].y < smallest_y) {
+			smallest_y = transformed_plane_points->points[i].y;
+		}
+
+		if( transformed_plane_points->points[i].z < smallest_z) {
+			smallest_z = transformed_plane_points->points[i].z;
+		}
+	}
+
+	homog_transform_t zero_cloud_transform;
+
+	orientation_t zero_rotation;
+	zero_rotation(0) = 0.0;
+	zero_rotation(1) = 0.0;
+	zero_rotation(2) = 0.0;
+
+	point_t diff_to_zero;
+	diff_to_zero(0) = 0.0;
+	diff_to_zero(1) = -smallest_y;
+	diff_to_zero(2) = -smallest_z + lowest_powerline_z;
+
+	zero_cloud_transform = getTransformMatrix((vector_t)diff_to_zero, eulToQuat(zero_rotation));
+
+	drone_position_in_plane = zero_cloud_transform * drone_position_in_plane;
+
+	pcl::transformPointCloud (*transformed_plane_points, *transformed_plane_points, zero_cloud_transform);
+	
+	auto trans_plane_msg = sensor_msgs::msg::PointCloud2();
+	OffboardControl::create_pointcloud_msg(transformed_plane_points, &trans_plane_msg);
+	_transformed_plane_pcl_pub->publish(trans_plane_msg);
+
+	// calculate start and goal points based on plane position and target powerline
+	point2d_t point_start;
+	point_start(0) = drone_position_in_plane(1);
+	point_start(1) = drone_position_in_plane(2);
+
+	//visualize start point
+	geometry_msgs::msg::PointStamped point_msg;
+	point_msg.header.frame_id = "world";
+	point_msg.header.stamp = this->get_clock()->now();
+	point_msg.point.x = drone_position_in_plane(0);
+	point_msg.point.y = drone_position_in_plane(1);
+	point_msg.point.z = drone_position_in_plane(2);
+	_goal_point_pub->publish(point_msg);
+
+	// make goal a random line for testing
+	srand (time(NULL));
+	int random_int = rand() % transformed_plane_points->size();
+
+	point2d_t point_goal;
+	point_goal(0) = transformed_plane_points->points[random_int].y;
+	point_goal(1) = transformed_plane_points->points[random_int].z - 1.5; // 1.5m below random cable
+
+	// make sure map contains both start and goal point
+	// create pcl from found path
+	pcl::PointCloud<pcl::PointXYZ>::Ptr path_pcl (new pcl::PointCloud<pcl::PointXYZ>);
+
+	OffboardControl::pathplanner(point_start, point_goal, transformed_plane_points, path_pcl);
+	
+
+	// visualize generated plane path
+	auto plane_path_msg = nav_msgs::msg::Path();
+	plane_path_msg.header.stamp = this->now();
+	plane_path_msg.header.frame_id = "world";
+
+	for (int i = 0; i < (int)path_pcl->size(); i++)
+	{
+	
+		auto pose_msg = geometry_msgs::msg::PoseStamped();
+		pose_msg.header.stamp = this->now();
+		pose_msg.header.frame_id = "world";
+		
+		pose_msg.pose.position.x = path_pcl->points[i].x;
+		pose_msg.pose.position.y = path_pcl->points[i].y;
+		pose_msg.pose.position.z = path_pcl->points[i].z;
+
+		plane_path_msg.poses.push_back(pose_msg);
+
+	}
+
+	if (plane_path_msg.poses.size() > 1)
+	{
+		_plane_path_pub->publish(plane_path_msg);
+	}
+	else {
+		RCLCPP_INFO(this->get_logger(), "\n \nNo valid path found\n");
+	}
+
+
+
+
+
+	// TODO:
+	// - Fix that path slightly intersects into safety zone
+	// - Back-transform path into plane frame
+
+
 
 
 	/* ----- fly pre-planned damper path ----- */
 
+
+
+	/* ----- Alignment ----- */
 
 	this->get_parameter("take_off_to_height", _takeoff_height);
 	if(_takeoff_height > 1){

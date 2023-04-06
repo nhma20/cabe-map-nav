@@ -175,6 +175,7 @@ class RadarPCLFilter : public rclcpp::Node
 
 			debug_point = this->create_publisher<geometry_msgs::msg::PointStamped>("/debug_point", 10);
 			_tower_pose_pub = this->create_publisher<geometry_msgs::msg::PoseStamped>("/tower_pose", 10);
+			_plane_pose_pub = this->create_publisher<geometry_msgs::msg::PoseStamped>("/plane_pose", 10);
 			_damper_plane_pub = this->create_publisher<visualization_msgs::msg::Marker>("/damper_plane", 10);
 			_plane_pointcloud_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>("/plane_pcl", 10);
 			_plane_line_points_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>("/plane_lines_pcl", 10);
@@ -248,6 +249,7 @@ class RadarPCLFilter : public rclcpp::Node
 
 		rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr debug_point;
 		rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr _tower_pose_pub;
+		rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr _plane_pose_pub;
 		rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr _damper_plane_pub;
 		rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr _plane_pointcloud_pub;
 		rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr _plane_line_points_pub;
@@ -2219,6 +2221,21 @@ void RadarPCLFilter::offset_tower_plane_and_points(pcl::PointCloud<pcl::PointXYZ
 
 	point_t tower_plane_position = tower_pose.position + rotated_offset_distance_vector;
 
+
+	// visualize the offset tower plane pose
+	auto plane_pose_msg = geometry_msgs::msg::PoseStamped();
+	plane_pose_msg.header = std_msgs::msg::Header();
+	plane_pose_msg.header.stamp = this->now();
+	plane_pose_msg.header.frame_id = "world";
+	plane_pose_msg.pose.orientation.x = tower_pose.quaternion(0);
+	plane_pose_msg.pose.orientation.y = tower_pose.quaternion(1);
+	plane_pose_msg.pose.orientation.z = tower_pose.quaternion(2);
+	plane_pose_msg.pose.orientation.w = tower_pose.quaternion(3);
+	plane_pose_msg.pose.position.x = tower_plane_position(0);
+	plane_pose_msg.pose.position.y = tower_plane_position(1);
+	plane_pose_msg.pose.position.z = tower_plane_position(2);
+	_plane_pose_pub->publish(plane_pose_msg);
+
 	// visualize with plane marker
 	visualization_msgs::msg::Marker marker;
 	marker.header = std_msgs::msg::Header();
@@ -2342,7 +2359,7 @@ void RadarPCLFilter::offset_tower_plane_and_points(pcl::PointCloud<pcl::PointXYZ
 
 	for (int i = 0; i < j; i++)
 	{
-		RCLCPP_INFO(this->get_logger(), "\nCluster %d contains %d data points\n", i, cluster_cloud_vector.at(i)->size());
+		// RCLCPP_INFO(this->get_logger(), "\nCluster %d contains %d data points\n", i, cluster_cloud_vector.at(i)->size());
 
 		pcl::ExtractIndices<pcl::PointXYZ> extract;
 
@@ -2405,7 +2422,7 @@ void RadarPCLFilter::offset_tower_plane_and_points(pcl::PointCloud<pcl::PointXYZ
 
 	}
 
-	RCLCPP_INFO(this->get_logger(), "\nPlane points contains %d points\n", plane_points->size());
+	// RCLCPP_INFO(this->get_logger(), "\nPlane points contains %d points\n", plane_points->size());
 
 
 	auto plane_lines_pcl_msg = sensor_msgs::msg::PointCloud2(); 

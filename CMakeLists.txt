@@ -47,6 +47,9 @@ include_directories(${PCL_INCLUDE_DIRS})
 link_directories(${PCL_LIBRARY_DIRS})
 add_definitions(${PCL_DEFINITIONS})
 
+include_directories(include)
+add_library(a-star include/AStar.cpp)
+
 add_executable(drone_frame_broadcaster
   src/drone_frame_broadcaster_node.cpp
   src/geometry.cpp
@@ -65,6 +68,10 @@ install(TARGETS drone_frame_broadcaster DESTINATION lib/${PROJECT_NAME})
 add_executable(offboard_control
   src/offboard_control.cpp
   src/geometry.cpp
+  include/AStar.cpp
+)
+target_link_libraries (offboard_control 
+${PCL_LIBRARIES}
 )
   ament_target_dependencies(offboard_control
   rclcpp
@@ -73,10 +80,12 @@ add_executable(offboard_control
   px4_msgs
   std_msgs
   nav_msgs
+  sensor_msgs
   tf2
   tf2_ros
   tf2_msgs
   radar_cable_follower_msgs
+  PCL
 )
 install(TARGETS offboard_control DESTINATION lib/${PROJECT_NAME})
 

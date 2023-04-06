@@ -182,6 +182,19 @@ transform_t getTransformMatrix(vector_t vec, quat_t quat) {
     return Trans;
 }
 
+transform_t getInverseTransformMatrix(vector_t vec, quat_t quat) {
+
+    Eigen::Matrix4f Trans; // Transformation Matrix
+
+    Trans.setIdentity();   // Set to Identity to make bottom row of Matrix 0,0,0,1
+    
+    Trans.block<3,3>(0,0) = quatToMat(quat).transpose(); // Copy rotation matrix into Trans
+    
+    Trans.block<3,1>(0,3) = -rotateVector(quatToMat(quat).transpose(), vec); // Copy translation matrix into Trans,  // minus before or after rotate ?
+
+    return Trans;
+}
+
 plane_t create_plane(quat_t powerline_direction, point_t drone_xyz) {
 
     vector_t unit_x(1, 0, 0);
