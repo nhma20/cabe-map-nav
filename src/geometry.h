@@ -101,6 +101,8 @@ transform_t getTransformMatrix(vector_t vec, quat_t quat);
 
 transform_t getInverseTransformMatrix(vector_t vec, quat_t quat);
 
+transform_t invertTransformMatrix(transform_t transform_in);
+
 plane_t create_plane(quat_t powerline_direction, point_t drone_xyz);
 
 pose_eul_t pose_NWU_to_NED(pose_eul_t NWU_pose);

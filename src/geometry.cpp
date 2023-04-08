@@ -195,6 +195,13 @@ transform_t getInverseTransformMatrix(vector_t vec, quat_t quat) {
     return Trans;
 }
 
+transform_t invertTransformMatrix(transform_t transform_in) {
+
+    transform_t Trans = getInverseTransformMatrix(transform_in.block<3,1>(0,3), matToQuat(transform_in.block<3,3>(0,0)));
+
+    return Trans;
+}
+
 plane_t create_plane(quat_t powerline_direction, point_t drone_xyz) {
 
     vector_t unit_x(1, 0, 0);

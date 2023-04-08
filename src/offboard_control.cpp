@@ -140,7 +140,7 @@ public:
 			});
 
 
-		_goal_point_pub = this->create_publisher<geometry_msgs::msg::PointStamped>("/goal_point", 10);
+		_start_point_pub = this->create_publisher<geometry_msgs::msg::PointStamped>("/plane_start_point", 10);
 
 
 		_global_position_sub = this->create_subscription<px4_msgs::msg::VehicleGlobalPosition>(
@@ -225,7 +225,7 @@ private:
 	rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr _follow_pose_pub;
 	rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr _manual_path_pub;
 	rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr _offboard_path_pub;
-	rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr _goal_point_pub;
+	rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr _start_point_pub;
 	rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr _transformed_plane_pcl_pub;
 	rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr _plane_path_pub;
 
@@ -650,8 +650,8 @@ void OffboardControl::pathplanner(point2d_t point_start, point2d_t point_goal, p
 		smallest_y = point_goal(1);
 	}
 
-    // Calculate map size in X and Y, scale to 10cm resolution
-    float scale = 2;
+    // Calculate map size in X and Y, scale to some resolution
+    float scale = 4;
     int size_x = (int)(highest_x*scale) - (int)(smallest_x*scale);
     int size_y = (int)(highest_y*scale) - (int)(smallest_y*scale);
 
@@ -726,7 +726,7 @@ void OffboardControl::pathplanner(point2d_t point_start, point2d_t point_goal, p
     auto path = generator.findPath({(int)scaled_point_start(0), (int)scaled_point_start(1)}, {(int)scaled_point_goal(0), (int)scaled_point_goal(1)});
 
     for(auto& coordinate : path) {
-		RCLCPP_INFO(this->get_logger(), "%d, %d", coordinate.x, coordinate.y);
+		// RCLCPP_INFO(this->get_logger(), "%d, %d", coordinate.x, coordinate.y);
 
 		pcl::PointXYZ tmp_point;
 		tmp_point.x = 0.0;
@@ -951,23 +951,14 @@ void OffboardControl::flight_state_machine() {
 
 	pcl::transformPointCloud (*transformed_plane_points, *transformed_plane_points, zero_cloud_transform);
 	
-	auto trans_plane_msg = sensor_msgs::msg::PointCloud2();
-	OffboardControl::create_pointcloud_msg(transformed_plane_points, &trans_plane_msg);
-	_transformed_plane_pcl_pub->publish(trans_plane_msg);
+	// auto trans_plane_msg = sensor_msgs::msg::PointCloud2();
+	// OffboardControl::create_pointcloud_msg(transformed_plane_points, &trans_plane_msg);
+	// _transformed_plane_pcl_pub->publish(trans_plane_msg);
 
 	// calculate start and goal points based on plane position and target powerline
 	point2d_t point_start;
 	point_start(0) = drone_position_in_plane(1);
 	point_start(1) = drone_position_in_plane(2);
-
-	//visualize start point
-	geometry_msgs::msg::PointStamped point_msg;
-	point_msg.header.frame_id = "world";
-	point_msg.header.stamp = this->get_clock()->now();
-	point_msg.point.x = drone_position_in_plane(0);
-	point_msg.point.y = drone_position_in_plane(1);
-	point_msg.point.z = drone_position_in_plane(2);
-	_goal_point_pub->publish(point_msg);
 
 	// make goal a random line for testing
 	srand (time(NULL));
@@ -983,6 +974,23 @@ void OffboardControl::flight_state_machine() {
 
 	OffboardControl::pathplanner(point_start, point_goal, transformed_plane_points, path_pcl);
 	
+
+	transform_t inv_zero_transform = invertTransformMatrix(zero_cloud_transform); //getInverseTransformMatrix(zero_cloud_transform.block<3,1>(0,3), matToQuat(zero_cloud_transform.block<3,3>(0,0)));
+
+	pcl::transformPointCloud (*path_pcl, *path_pcl, inv_zero_transform);
+
+	transform_t inv_plane_to_world = invertTransformMatrix(plane_to_world); //getInverseTransformMatrix(plane_to_world.block<3,1>(0,3), matToQuat(plane_to_world.block<3,3>(0,0)));
+
+	pcl::transformPointCloud (*path_pcl, *path_pcl, inv_plane_to_world);
+
+	//visualize drone start point in plane
+	geometry_msgs::msg::PointStamped point_msg;
+	point_msg.header.frame_id = "world";
+	point_msg.header.stamp = this->get_clock()->now();
+	point_msg.point.x = plane_position(0);
+	point_msg.point.y = plane_position(1);
+	point_msg.point.z = plane_position(2) + _following_distance;
+	_start_point_pub->publish(point_msg);
 
 	// visualize generated plane path
 	auto plane_path_msg = nav_msgs::msg::Path();

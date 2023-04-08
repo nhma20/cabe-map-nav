@@ -2272,7 +2272,7 @@ void RadarPCLFilter::offset_tower_plane_and_points(pcl::PointCloud<pcl::PointXYZ
 	marker.color.r = 0.0f;
 	marker.color.g = 1.0f;
 	marker.color.b = 0.0f;
-	marker.color.a = 0.6;
+	marker.color.a = 0.4;
 
 	marker.lifetime = rclcpp::Duration::from_seconds(0);
 
