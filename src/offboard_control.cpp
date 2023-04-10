@@ -683,7 +683,7 @@ void OffboardControl::pathplanner(point2d_t point_start, point2d_t point_goal, p
 
     int collisions_count = 0;
 
-    // Make neighbours collisions as well, iteratively/recursively
+    // Make collision zones around plane powerline points
     for (int i  = 0; i < size_y; i++)
     {
         for (int j = 0; j < size_x; j++)
@@ -868,171 +868,239 @@ void OffboardControl::flight_state_machine() {
 
 	/* ----- (get tower position, calculate damper plane,) plan path ----- */
 	
-	pcl::PointCloud<pcl::PointXYZ>::Ptr plane_line_points (new pcl::PointCloud<pcl::PointXYZ>);
-	
-	OffboardControl::read_pointcloud(_plane_line_points_msg, plane_line_points);
+	static bool planned_path = false;
 
-	float lowest_powerline_z = 99999.0;
-	for (int i = 0; i < (int)plane_line_points->size(); i++)
-	{
-		if (plane_line_points->points[i].z < lowest_powerline_z)
+	static pcl::PointCloud<pcl::PointXYZ>::Ptr planned_path_pcl (new pcl::PointCloud<pcl::PointXYZ>);
+
+
+	if (!planned_path)
+	{	
+
+		pcl::PointCloud<pcl::PointXYZ>::Ptr plane_line_points (new pcl::PointCloud<pcl::PointXYZ>);
+		
+		OffboardControl::read_pointcloud(_plane_line_points_msg, plane_line_points);
+
+		float lowest_powerline_z = 99999.0;
+		for (int i = 0; i < (int)plane_line_points->size(); i++)
 		{
-			lowest_powerline_z = plane_line_points->points[i].z;
+			if (plane_line_points->points[i].z < lowest_powerline_z)
+			{
+				lowest_powerline_z = plane_line_points->points[i].z;
+			}
+			
 		}
+
+		homog_transform_t plane_to_world;
+
+		point_t plane_position;
+		plane_position(0) = _plane_pose_msg->pose.position.x;
+		plane_position(1) = _plane_pose_msg->pose.position.y;
+		plane_position(2) = _plane_pose_msg->pose.position.z;
+
+		quat_t plane_quaternion;
+		plane_quaternion(0) = _plane_pose_msg->pose.orientation.x;
+		plane_quaternion(1) = _plane_pose_msg->pose.orientation.y;
+		plane_quaternion(2) = _plane_pose_msg->pose.orientation.z;
+		plane_quaternion(3) = _plane_pose_msg->pose.orientation.w;
+
 		
-	}
+		homog_point_t drone_position_in_plane;
+		drone_position_in_plane(0) = plane_position(0);
+		drone_position_in_plane(1) = plane_position(1);
+		drone_position_in_plane(2) = plane_position(2) + _following_distance;
+		drone_position_in_plane(3) = 1;
 
-	homog_transform_t plane_to_world;
+		// get opposite transform 
+		// https://math.stackexchange.com/questions/3575361/difficulty-understanding-the-inverse-of-a-homogeneous-transformation-matrix
 
-	point_t plane_position;
-	plane_position(0) = _plane_pose_msg->pose.position.x;
-	plane_position(1) = _plane_pose_msg->pose.position.y;
-	plane_position(2) = _plane_pose_msg->pose.position.z;
+		plane_to_world = getInverseTransformMatrix(plane_position, plane_quaternion);
 
-	quat_t plane_quaternion;
-	plane_quaternion(0) = _plane_pose_msg->pose.orientation.x;
-	plane_quaternion(1) = _plane_pose_msg->pose.orientation.y;
-	plane_quaternion(2) = _plane_pose_msg->pose.orientation.z;
-	plane_quaternion(3) = _plane_pose_msg->pose.orientation.w;
+		drone_position_in_plane = plane_to_world * drone_position_in_plane;
 
-	
-	homog_point_t drone_position_in_plane;
-	drone_position_in_plane(0) = plane_position(0);
-	drone_position_in_plane(1) = plane_position(1);
-	drone_position_in_plane(2) = plane_position(2) + _following_distance;
-	drone_position_in_plane(3) = 1;
+		// transform points in pointcloud
 
-	// get opposite transform 
-	// https://math.stackexchange.com/questions/3575361/difficulty-understanding-the-inverse-of-a-homogeneous-transformation-matrix
+		pcl::PointCloud<pcl::PointXYZ>::Ptr transformed_plane_points (new pcl::PointCloud<pcl::PointXYZ>);
 
-	plane_to_world = getInverseTransformMatrix(plane_position, plane_quaternion);
+		pcl::transformPointCloud (*plane_line_points, *transformed_plane_points, plane_to_world);
 
-	drone_position_in_plane = plane_to_world * drone_position_in_plane;
-
-	// transform points in pointcloud
-
-	pcl::PointCloud<pcl::PointXYZ>::Ptr transformed_plane_points (new pcl::PointCloud<pcl::PointXYZ>);
-
-	pcl::transformPointCloud (*plane_line_points, *transformed_plane_points, plane_to_world);
-
-	// auto trans_plane_msg = sensor_msgs::msg::PointCloud2();
-	// OffboardControl::create_pointcloud_msg(transformed_plane_points, &trans_plane_msg);
-	// _transformed_plane_pcl_pub->publish(trans_plane_msg);
+		// auto trans_plane_msg = sensor_msgs::msg::PointCloud2();
+		// OffboardControl::create_pointcloud_msg(transformed_plane_points, &trans_plane_msg);
+		// _transformed_plane_pcl_pub->publish(trans_plane_msg);
 
 
-	float smallest_y = 99999.0;
-	float smallest_z = 99999.0;
-	for (int i = 0; i < (int)transformed_plane_points->size(); i++)
-	{
-		if( transformed_plane_points->points[i].y < smallest_y) {
-			smallest_y = transformed_plane_points->points[i].y;
+		float smallest_y = 99999.0;
+		float smallest_z = 99999.0;
+		for (int i = 0; i < (int)transformed_plane_points->size(); i++)
+		{
+			if( transformed_plane_points->points[i].y < smallest_y) {
+				smallest_y = transformed_plane_points->points[i].y;
+			}
+
+			if( transformed_plane_points->points[i].z < smallest_z) {
+				smallest_z = transformed_plane_points->points[i].z;
+			}
 		}
 
-		if( transformed_plane_points->points[i].z < smallest_z) {
-			smallest_z = transformed_plane_points->points[i].z;
-		}
-	}
+		homog_transform_t zero_cloud_transform;
 
-	homog_transform_t zero_cloud_transform;
+		orientation_t zero_rotation;
+		zero_rotation(0) = 0.0;
+		zero_rotation(1) = 0.0;
+		zero_rotation(2) = 0.0;
 
-	orientation_t zero_rotation;
-	zero_rotation(0) = 0.0;
-	zero_rotation(1) = 0.0;
-	zero_rotation(2) = 0.0;
+		point_t diff_to_zero;
+		diff_to_zero(0) = 0.0;
+		diff_to_zero(1) = -smallest_y;
+		diff_to_zero(2) = -smallest_z + lowest_powerline_z;
 
-	point_t diff_to_zero;
-	diff_to_zero(0) = 0.0;
-	diff_to_zero(1) = -smallest_y;
-	diff_to_zero(2) = -smallest_z + lowest_powerline_z;
+		zero_cloud_transform = getTransformMatrix((vector_t)diff_to_zero, eulToQuat(zero_rotation));
 
-	zero_cloud_transform = getTransformMatrix((vector_t)diff_to_zero, eulToQuat(zero_rotation));
+		drone_position_in_plane = zero_cloud_transform * drone_position_in_plane;
 
-	drone_position_in_plane = zero_cloud_transform * drone_position_in_plane;
-
-	pcl::transformPointCloud (*transformed_plane_points, *transformed_plane_points, zero_cloud_transform);
-	
-	// auto trans_plane_msg = sensor_msgs::msg::PointCloud2();
-	// OffboardControl::create_pointcloud_msg(transformed_plane_points, &trans_plane_msg);
-	// _transformed_plane_pcl_pub->publish(trans_plane_msg);
-
-	// calculate start and goal points based on plane position and target powerline
-	point2d_t point_start;
-	point_start(0) = drone_position_in_plane(1);
-	point_start(1) = drone_position_in_plane(2);
-
-	// make goal a random line for testing
-	srand (time(NULL));
-	int random_int = rand() % transformed_plane_points->size();
-
-	point2d_t point_goal;
-	point_goal(0) = transformed_plane_points->points[random_int].y;
-	point_goal(1) = transformed_plane_points->points[random_int].z - 1.5; // 1.5m below random cable
-
-	// make sure map contains both start and goal point
-	// create pcl from found path
-	pcl::PointCloud<pcl::PointXYZ>::Ptr path_pcl (new pcl::PointCloud<pcl::PointXYZ>);
-
-	OffboardControl::pathplanner(point_start, point_goal, transformed_plane_points, path_pcl);
-	
-
-	transform_t inv_zero_transform = invertTransformMatrix(zero_cloud_transform); //getInverseTransformMatrix(zero_cloud_transform.block<3,1>(0,3), matToQuat(zero_cloud_transform.block<3,3>(0,0)));
-
-	pcl::transformPointCloud (*path_pcl, *path_pcl, inv_zero_transform);
-
-	transform_t inv_plane_to_world = invertTransformMatrix(plane_to_world); //getInverseTransformMatrix(plane_to_world.block<3,1>(0,3), matToQuat(plane_to_world.block<3,3>(0,0)));
-
-	pcl::transformPointCloud (*path_pcl, *path_pcl, inv_plane_to_world);
-
-	//visualize drone start point in plane
-	geometry_msgs::msg::PointStamped point_msg;
-	point_msg.header.frame_id = "world";
-	point_msg.header.stamp = this->get_clock()->now();
-	point_msg.point.x = plane_position(0);
-	point_msg.point.y = plane_position(1);
-	point_msg.point.z = plane_position(2) + _following_distance;
-	_start_point_pub->publish(point_msg);
-
-	// visualize generated plane path
-	auto plane_path_msg = nav_msgs::msg::Path();
-	plane_path_msg.header.stamp = this->now();
-	plane_path_msg.header.frame_id = "world";
-
-	for (int i = 0; i < (int)path_pcl->size(); i++)
-	{
-	
-		auto pose_msg = geometry_msgs::msg::PoseStamped();
-		pose_msg.header.stamp = this->now();
-		pose_msg.header.frame_id = "world";
+		pcl::transformPointCloud (*transformed_plane_points, *transformed_plane_points, zero_cloud_transform);
 		
-		pose_msg.pose.position.x = path_pcl->points[i].x;
-		pose_msg.pose.position.y = path_pcl->points[i].y;
-		pose_msg.pose.position.z = path_pcl->points[i].z;
+		// auto trans_plane_msg = sensor_msgs::msg::PointCloud2();
+		// OffboardControl::create_pointcloud_msg(transformed_plane_points, &trans_plane_msg);
+		// _transformed_plane_pcl_pub->publish(trans_plane_msg);
 
-		plane_path_msg.poses.push_back(pose_msg);
+		// calculate start and goal points based on plane position and target powerline
+		point2d_t point_start;
+		point_start(0) = drone_position_in_plane(1);
+		point_start(1) = drone_position_in_plane(2);
+
+		// make goal a random line for testing
+		srand (time(NULL));
+		int random_int = rand() % transformed_plane_points->size();
+
+		point2d_t point_goal;
+		point_goal(0) = transformed_plane_points->points[random_int].y;
+		point_goal(1) = transformed_plane_points->points[random_int].z - 1.5; // 1.5m below random cable
+
+		// make sure map contains both start and goal point
+		// create pcl from found path
+
+		pcl::PointCloud<pcl::PointXYZ>::Ptr path_pcl (new pcl::PointCloud<pcl::PointXYZ>);
+
+		OffboardControl::pathplanner(point_goal, point_start, transformed_plane_points, path_pcl); // inverse path?, therefore goal and start switched, stupid fix
+		
+
+		transform_t inv_zero_transform = invertTransformMatrix(zero_cloud_transform); //getInverseTransformMatrix(zero_cloud_transform.block<3,1>(0,3), matToQuat(zero_cloud_transform.block<3,3>(0,0)));
+
+		pcl::transformPointCloud (*path_pcl, *path_pcl, inv_zero_transform);
+
+		transform_t inv_plane_to_world = invertTransformMatrix(plane_to_world); //getInverseTransformMatrix(plane_to_world.block<3,1>(0,3), matToQuat(plane_to_world.block<3,3>(0,0)));
+
+		pcl::transformPointCloud (*path_pcl, *path_pcl, inv_plane_to_world);
+
+		//visualize drone start point in plane
+		geometry_msgs::msg::PointStamped point_msg;
+		point_msg.header.frame_id = "world";
+		point_msg.header.stamp = this->get_clock()->now();
+		point_msg.point.x = plane_position(0);
+		point_msg.point.y = plane_position(1);
+		point_msg.point.z = plane_position(2) + _following_distance;
+		_start_point_pub->publish(point_msg);
+
+		// visualize generated plane path
+		auto plane_path_msg = nav_msgs::msg::Path();
+		plane_path_msg.header.stamp = this->now();
+		plane_path_msg.header.frame_id = "world";
+
+		for (int i = 0; i < (int)path_pcl->size(); i++)
+		{
+		
+			auto pose_msg = geometry_msgs::msg::PoseStamped();
+			pose_msg.header.stamp = this->now();
+			pose_msg.header.frame_id = "world";
+			
+			pose_msg.pose.position.x = path_pcl->points[i].x;
+			pose_msg.pose.position.y = path_pcl->points[i].y;
+			pose_msg.pose.position.z = path_pcl->points[i].z;
+
+			plane_path_msg.poses.push_back(pose_msg);
+
+		}
+
+		pcl::PointXYZ tmp_point;
+		tmp_point.x = plane_position(0);
+		tmp_point.y = plane_position(1);
+		tmp_point.z = plane_position(2) + _following_distance;
+		planned_path_pcl->push_back(tmp_point);
+		*planned_path_pcl += *path_pcl;
+
+		if (plane_path_msg.poses.size() > 1)
+		{
+			_plane_path_pub->publish(plane_path_msg);
+		}
+		else {
+			RCLCPP_INFO(this->get_logger(), "\n \nNo valid path found\n");
+		}
 
 	}
-
-	if (plane_path_msg.poses.size() > 1)
-	{
-		_plane_path_pub->publish(plane_path_msg);
-	}
-	else {
-		RCLCPP_INFO(this->get_logger(), "\n \nNo valid path found\n");
-	}
-
-
-
+ 
+	planned_path = true;
 
 
 	// TODO:
 	// - Fix that path slightly intersects into safety zone
-	// - Back-transform path into plane frame
-
-
 
 
 	/* ----- fly pre-planned damper path ----- */
 
+	static int path_pos_cnt = 0;
+
+	if (path_pos_cnt < (int)planned_path_pcl->size()) {
+
+		px4_msgs::msg::TrajectorySetpoint msg{};
+		msg.timestamp = _timestamp.load();
+		msg.x = planned_path_pcl->points[path_pos_cnt].x; // in meters NED
+		msg.y = -planned_path_pcl->points[path_pos_cnt].y; // in meters NED
+		msg.z = -planned_path_pcl->points[path_pos_cnt].z; // in meters NED
+		msg.yaw = -quatToEul(_alignment_pose.quaternion)(2); // rotation around z NED in radians
+		msg.vx = 0.0; // m/s NED
+		msg.vy = 0.0; // m/s NED
+		msg.vz = 0.0; // m/s NED
+
+		OffboardControl::publish_setpoint(msg);
+
+		// XYZ delta to goal waypoint (incl. ENU to NED)
+		float x_diff = _drone_pose.position(0) - planned_path_pcl->points[path_pos_cnt].x;
+		float y_diff = _drone_pose.position(1) - planned_path_pcl->points[path_pos_cnt].y;
+		float z_diff = _drone_pose.position(2) - planned_path_pcl->points[path_pos_cnt].z;
+
+		float threshold = 0.2;
+		if ( x_diff < threshold &&
+			 y_diff < threshold &&
+			 z_diff < threshold &&
+			 x_diff > -threshold &&
+			 y_diff > -threshold &&
+			 z_diff > -threshold
+		)
+		{
+			path_pos_cnt++;
+		}
+		else {
+			RCLCPP_INFO(this->get_logger(), "\n Delta to position %d/%d: \n X: %f \n Y: %f \n Z: %f \n", path_pos_cnt, (int)planned_path_pcl->size(), x_diff, y_diff, z_diff);
+		}
+
+		return;
+
+	}
+
+
+	px4_msgs::msg::TrajectorySetpoint msg{};
+	msg.timestamp = _timestamp.load();
+	msg.x = planned_path_pcl->points.back().x; // in meters NED
+	msg.y = -planned_path_pcl->points.back().y; // in meters NED
+	msg.z = -planned_path_pcl->points.back().z; // in meters NED
+	msg.yaw = -quatToEul(_alignment_pose.quaternion)(2); // rotation around z NED in radians
+	msg.vx = 0.0; // m/s NED
+	msg.vy = 0.0; // m/s NED
+	msg.vz = 0.0; // m/s NED
+
+	OffboardControl::publish_setpoint(msg);
+
+	return; // remove if alignment needed
 
 
 	/* ----- Alignment ----- */
