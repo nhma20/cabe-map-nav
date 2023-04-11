@@ -17,3 +17,6 @@ offboard_control:
   ros__parameters:
     powerline_following_distance: 5.0
     powerline_following_speed: 0.0
+    astar_map_scale: 4.0
+    astar_safe_zone_radius: 1.0
+    astar_map_buffer: 3.0

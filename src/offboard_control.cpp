@@ -106,6 +106,15 @@ public:
 		this->declare_parameter<float>("take_off_to_height", 0.0);
 		this->get_parameter("take_off_to_height", _takeoff_height);
 
+		this->declare_parameter<float>("astar_map_scale", 4.0);
+		this->get_parameter("astar_map_scale", _astar_map_scale);
+
+		this->declare_parameter<float>("astar_safe_zone_radius", 1.0);
+		this->get_parameter("astar_safe_zone_radius", _astar_safe_zone_radius);
+
+		this->declare_parameter<float>("astar_map_buffer", 3.0);
+		this->get_parameter("astar_map_buffer", _astar_map_buffer);
+
 
 		// VehicleStatus: https://github.com/PX4/px4_msgs/blob/master/msg/VehicleStatus.msg
 		_vehicle_status_sub = create_subscription<px4_msgs::msg::VehicleStatus>(
@@ -273,6 +282,10 @@ private:
 
 	float _global_latitude = 0.0; // degrees
 	float _global_longitude = 0.0; // degrees
+
+	float _astar_map_buffer = 0.0;
+	float _astar_safe_zone_radius = 0.0;
+	float _astar_map_scale = 0.0;
 
 	sensor_msgs::msg::PointCloud2::SharedPtr _plane_line_points_msg;
 	geometry_msgs::msg::PoseStamped::SharedPtr _plane_pose_msg;
@@ -651,14 +664,16 @@ void OffboardControl::pathplanner(point2d_t point_start, point2d_t point_goal, p
 	}
 
     // Calculate map size in X and Y, scale to some resolution
-    float scale = 4;
+    // float scale = 4;
+	float scale = _astar_map_scale;
     int size_x = (int)(highest_x*scale) - (int)(smallest_x*scale);
     int size_y = (int)(highest_y*scale) - (int)(smallest_y*scale);
 
 	RCLCPP_INFO(this->get_logger(), "Path map size: X %d, Y %d", size_x, size_y);
 
     // Add free-space buffer on each side of map and on top
-    int buffer_size = 3; // 3m buffer 
+    // int buffer_size = 3; // 3m buffer 
+	int buffer_size = (int)_astar_map_buffer; // 3m buffer 
     buffer_size = (int)(buffer_size * scale);
     size_x = size_x + 2*(int)(buffer_size);
     size_y = size_y + 2*(int)(buffer_size);
@@ -669,7 +684,8 @@ void OffboardControl::pathplanner(point2d_t point_start, point2d_t point_goal, p
 
     // Add collisions based on powerline coordinates
     std::vector<std::vector<int>> scaled_collision_coordinates;
-    float min_powerline_safety_distance = 1.0; // meters
+    // float min_powerline_safety_distance = 1.0; // meters
+	float min_powerline_safety_distance = _astar_safe_zone_radius;
     int scaled_safety_distance = (int)ceil(min_powerline_safety_distance * scale);
 
     // initialize collision coordinates vector with scaled powerline coordinates
