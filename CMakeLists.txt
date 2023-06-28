@@ -35,10 +35,12 @@ find_package(OpenCV REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
 find_package(tf2_msgs REQUIRED)
 find_package(image_transport REQUIRED)
 find_package(radar_cable_follower_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
+find_package(interactive_markers REQUIRED)
 
 find_package(PCL 1.2 REQUIRED)
 
@@ -113,7 +115,6 @@ ${PCL_LIBRARIES}
 install(TARGETS radar_pointcloud_filter DESTINATION lib/${PROJECT_NAME})
 
 
-
 add_executable(lidar_to_mmwave_node
 src/lidar_to_mmwave.cpp
 )
@@ -123,6 +124,42 @@ src/lidar_to_mmwave.cpp
 )
 install(TARGETS lidar_to_mmwave_node DESTINATION lib/${PROJECT_NAME})
 
+
+add_executable(interactive_marker
+src/interactive_marker.cpp
+src/geometry.cpp
+)
+target_link_libraries (interactive_marker 
+)
+  ament_target_dependencies(interactive_marker
+  interactive_markers
+  rclcpp
+  sensor_msgs
+  visualization_msgs
+  tf2
+  tf2_ros
+  tf2_msgs
+  tf2_geometry_msgs
+)
+install(TARGETS interactive_marker DESTINATION lib/${PROJECT_NAME})
+
+
+add_executable(marker_publisher
+src/marker_pub.cpp
+src/geometry.cpp
+)
+target_link_libraries (marker_publisher 
+)
+  ament_target_dependencies(marker_publisher
+  rclcpp
+  sensor_msgs
+  visualization_msgs
+  px4_msgs
+  tf2
+  tf2_ros
+  tf2_msgs
+)
+install(TARGETS marker_publisher DESTINATION lib/${PROJECT_NAME})
 
 
 ############
