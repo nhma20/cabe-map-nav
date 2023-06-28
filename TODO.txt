@@ -1,0 +1,10 @@
+radar_pointcloud_filter:
+- Track line segments
+	- Project along pl dir vector onto a plane
+	- use delta in projected plane positions as well as 3D positions for tracking
+	
+interactive_marker:
+- Fix interactive marker regulator (make add and remove more stable)
+
+offboard_control:
+- Use marker click event to trigger trajectory planner and autonomous flight to cable
