@@ -1,14 +1,10 @@
 # cable_map_nav
-ROS2 package for the cable mapper and navigator.
+ROS2 package for the cable mapper, GUI and navigator.
 
 For similar hardware setup, see:
 https://github.com/nhma20/radar_cable_follower_HW
 
-
-![example_img](https://user-images.githubusercontent.com/76950970/215746893-debff5af-c3ea-4d19-ae66-a356fabcba79.png)
-
-
-![uzh_rcf_data_example](https://user-images.githubusercontent.com/76950970/208649778-fa7fce0c-6278-4dfc-a520-ef954ad83a8b.jpg)
+![pl_gui](https://github.com/nhma20/cabe-map-nav/assets/76950970/76177f13-5bd1-479f-95b7-897da3be2ffb)
 
 
 ```sh
