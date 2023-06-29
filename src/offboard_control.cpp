@@ -592,6 +592,9 @@ void OffboardControl::read_pointcloud(const sensor_msgs::msg::PointCloud2::Share
 void OffboardControl::pathplanner(point2d_t point_start, point2d_t point_goal, pcl::PointCloud<pcl::PointXYZ>::Ptr transformed_plane_points,
 										pcl::PointCloud<pcl::PointXYZ>::Ptr path_pcl) {
 
+
+	auto start_1 = high_resolution_clock::now();
+
     // find highest X and Y values
     float highest_x = 0;
     float highest_y = 0;
@@ -697,6 +700,13 @@ void OffboardControl::pathplanner(point2d_t point_start, point2d_t point_goal, p
         scaled_collision_coordinates.push_back(tmp_vec);
     }
 
+
+	auto stop_1 = high_resolution_clock::now();
+	auto duration = duration_cast<microseconds>(stop_1 - start_1);
+	RCLCPP_INFO(this->get_logger(), "Pathplanning step 1 took: %f ms", (((float)duration.count()) / 1000));
+
+	auto start_2 = high_resolution_clock::now();
+
     int collisions_count = 0;
 
     // Make collision zones around plane powerline points
@@ -723,8 +733,15 @@ void OffboardControl::pathplanner(point2d_t point_start, point2d_t point_goal, p
         
     }
 
+	auto stop_2 = high_resolution_clock::now();
+	auto duration2 = duration_cast<microseconds>(stop_2 - start_2);
+	RCLCPP_INFO(this->get_logger(), "Pathplanning step 2 took: %f ms", (((float)duration2.count()) / 1000));
+
 	RCLCPP_INFO(this->get_logger(), "Pathplanner number of collisions: %d", collisions_count);
     
+
+	auto start_3 = high_resolution_clock::now();
+
     generator.setHeuristic(AStar::Heuristic::euclidean);
     generator.setDiagonalMovement(true);
 
@@ -751,6 +768,11 @@ void OffboardControl::pathplanner(point2d_t point_start, point2d_t point_goal, p
 
 		path_pcl->push_back(tmp_point);
     }
+
+
+	auto stop_3 = high_resolution_clock::now();
+	auto duration3 = duration_cast<microseconds>(stop_3 - start_3);
+	RCLCPP_INFO(this->get_logger(), "Pathplanning step 3 took: %f ms", (((float)duration3.count()) / 1000));
 
 	// std::string astar_map = generator.visualize(path); // send to file instead?
 	
@@ -997,8 +1019,14 @@ void OffboardControl::flight_state_machine() {
 
 		pcl::PointCloud<pcl::PointXYZ>::Ptr path_pcl (new pcl::PointCloud<pcl::PointXYZ>);
 
+		auto start = high_resolution_clock::now();
+
 		OffboardControl::pathplanner(point_goal, point_start, transformed_plane_points, path_pcl); // inverse path?, therefore goal and start switched, stupid fix
 		
+		auto stop = high_resolution_clock::now();
+		auto duration = duration_cast<microseconds>(stop - start);
+		RCLCPP_INFO(this->get_logger(), "Pathplanning took: %f ms", (((float)duration.count()) / 1000));
+		// while(1);
 
 		transform_t inv_zero_transform = invertTransformMatrix(zero_cloud_transform); //getInverseTransformMatrix(zero_cloud_transform.block<3,1>(0,3), matToQuat(zero_cloud_transform.block<3,3>(0,0)));
 
