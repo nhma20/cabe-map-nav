@@ -178,6 +178,7 @@ class RadarPCLFilter : public rclcpp::Node
 			_tower_pose_pub = this->create_publisher<geometry_msgs::msg::PoseStamped>("/tower_pose", 10);
 			_plane_pose_pub = this->create_publisher<geometry_msgs::msg::PoseStamped>("/plane_pose", 10);
 			_damper_plane_pub = this->create_publisher<visualization_msgs::msg::Marker>("/damper_plane", 10);
+			_pylon_marker_pub = this->create_publisher<visualization_msgs::msg::Marker>("/pylon_marker", 10);
 			_pl_marker_array_pub = this->create_publisher<visualization_msgs::msg::MarkerArray>("/pl_marker_array", 10);
 			_plane_pointcloud_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>("/plane_pcl", 10);
 			_plane_line_points_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>("/plane_lines_pcl", 10);
@@ -253,6 +254,7 @@ class RadarPCLFilter : public rclcpp::Node
 		rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr _tower_pose_pub;
 		rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr _plane_pose_pub;
 		rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr _damper_plane_pub;
+		rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr _pylon_marker_pub;
 		rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr _pl_marker_array_pub;
 		rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr _plane_pointcloud_pub;
 		rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr _plane_line_points_pub;
@@ -2195,7 +2197,7 @@ void RadarPCLFilter::offset_tower_plane_and_points(pcl::PointCloud<pcl::PointXYZ
 	float offset_distance = 3.0; // distance from tower to damper (meters)
 	float marker_above_line = 5.0; // rviz2 visualization extending above top powerline (meters)
 	float plane_width = 10.0; // width across powerlines to search for nearest points
-	float plane_search_depth = 1.5; // distance along powerlines to search for nearest points
+	float plane_search_depth = 2.0; // distance along powerlines to search for nearest points
 
 
 
@@ -2499,7 +2501,65 @@ void RadarPCLFilter::offset_tower_plane_and_points(pcl::PointCloud<pcl::PointXYZ
 
 	_pl_marker_array_pub->publish(marker_array);
 
-	// RCLCPP_INFO(this->get_logger(), "\nPlane points contains %d points\n", plane_points->size());
+	
+	// visualize pylon with marker
+	visualization_msgs::msg::Marker pylon_marker;
+	pylon_marker.header = std_msgs::msg::Header();
+	pylon_marker.header.stamp = this->now();
+	pylon_marker.header.frame_id = "world";
+
+	pylon_marker.ns = "damper_plane";
+	pylon_marker.id = 0;
+
+	pylon_marker.type = visualization_msgs::msg::Marker::CUBE;
+
+	pylon_marker.action = visualization_msgs::msg::Marker::ADD;
+
+	pylon_marker.pose.orientation.x = tower_pose.quaternion(0);
+	pylon_marker.pose.orientation.y = tower_pose.quaternion(1);
+	pylon_marker.pose.orientation.z = tower_pose.quaternion(2);
+	pylon_marker.pose.orientation.w = tower_pose.quaternion(3);
+	pylon_marker.pose.position.x = tower_pose.position(0);
+	pylon_marker.pose.position.y = tower_pose.position(1);
+	pylon_marker.pose.position.z = tower_pose.position(2) / 2; // to fit plane from ground to above line
+
+	float largest_dist = -1;
+
+	for (size_t i = 0; i < marker_array.markers.size(); i++)
+	{
+		for (size_t j = 0; j < marker_array.markers.size(); j++)
+		{
+			if (i != j)
+			{
+				float dist_x = marker_array.markers.at(i).pose.position.x - marker_array.markers.at(j).pose.position.x;
+				float dist_y = marker_array.markers.at(i).pose.position.y - marker_array.markers.at(j).pose.position.y;
+
+				float dist = sqrt( pow(dist_x, 2) + pow(dist_y, 2) );
+
+				if (dist > largest_dist)
+				{
+					largest_dist = dist;
+				}
+				
+			}
+		}
+	}
+	
+
+	float tower_depth = 1;
+	// Set the scale of the marker -- 1x1x1 here means 1m on a side
+	pylon_marker.scale.x = largest_dist;
+	pylon_marker.scale.y = tower_pose.position(2);
+	pylon_marker.scale.z = tower_depth;
+	// Set the color -- be sure to set alpha to something non-zero!
+	pylon_marker.color.r = 1.0f;
+	pylon_marker.color.g = 0.0f;
+	pylon_marker.color.b = 0.0f;
+	pylon_marker.color.a = 0.4;
+
+	pylon_marker.lifetime = rclcpp::Duration::from_seconds(0);
+
+	_pylon_marker_pub->publish(pylon_marker);
 
 
 	auto plane_lines_pcl_msg = sensor_msgs::msg::PointCloud2(); 

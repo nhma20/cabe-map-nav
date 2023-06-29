@@ -143,6 +143,7 @@ void BasicControlsNode::regulateMarkers(const visualization_msgs::msg::MarkerArr
       {
         std::string marker_name = std::to_string(i);
         this->removeInteractiveMarker(marker_name);
+        current_pl_ids_.erase(current_pl_ids_.begin()+i);
       }
      
     }
