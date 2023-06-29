@@ -5,6 +5,7 @@
 #include <geometry_msgs/msg/pose.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
 #include "visualization_msgs/msg/marker.hpp"
+#include "visualization_msgs/msg/marker_array.hpp"
 #include <px4_msgs/msg/vehicle_odometry.hpp>
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer.h>
@@ -177,6 +178,7 @@ class RadarPCLFilter : public rclcpp::Node
 			_tower_pose_pub = this->create_publisher<geometry_msgs::msg::PoseStamped>("/tower_pose", 10);
 			_plane_pose_pub = this->create_publisher<geometry_msgs::msg::PoseStamped>("/plane_pose", 10);
 			_damper_plane_pub = this->create_publisher<visualization_msgs::msg::Marker>("/damper_plane", 10);
+			_pl_marker_array_pub = this->create_publisher<visualization_msgs::msg::MarkerArray>("/pl_marker_array", 10);
 			_plane_pointcloud_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>("/plane_pcl", 10);
 			_plane_line_points_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>("/plane_lines_pcl", 10);
 			
@@ -251,6 +253,7 @@ class RadarPCLFilter : public rclcpp::Node
 		rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr _tower_pose_pub;
 		rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr _plane_pose_pub;
 		rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr _damper_plane_pub;
+		rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr _pl_marker_array_pub;
 		rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr _plane_pointcloud_pub;
 		rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr _plane_line_points_pub;
 
@@ -2357,6 +2360,8 @@ void RadarPCLFilter::offset_tower_plane_and_points(pcl::PointCloud<pcl::PointXYZ
 
 	pcl::PointCloud<pcl::PointXYZ>::Ptr plane_points (new pcl::PointCloud<pcl::PointXYZ>);
 
+	visualization_msgs::msg::MarkerArray marker_array;
+
 	for (int i = 0; i < j; i++)
 	{
 		// RCLCPP_INFO(this->get_logger(), "\nCluster %d contains %d data points\n", i, cluster_cloud_vector.at(i)->size());
@@ -2420,7 +2425,79 @@ void RadarPCLFilter::offset_tower_plane_and_points(pcl::PointCloud<pcl::PointXYZ
 
 		// plane_points->push_back(tmp_point);
 
+
+
+
+		// get position and angles of 3D line fits
+				// could instead do: https://gist.github.com/kevinmoran/b45980723e53edeb8a5a43c49f134724
+
+		// scale factor for X and Y to compensate ignoring Z
+		float z_factor = 1 / sqrt( pow(coefficients->values[3],2) + pow(coefficients->values[4],2) );
+		// calculate yaw in world frame (+90 to -90 deg relative to X direction)
+		float line_yaw = -1 * (abs(coefficients->values[3]) / coefficients->values[3]) * acos(abs(coefficients->values[3])) * z_factor;
+
+		// calculate line "pitch"
+		float long_side = sqrt( pow(coefficients->values[3],2) + pow(coefficients->values[4],2) );
+		float line_pitch = atan2(double(coefficients->values[5]), double(long_side));
+
+		orientation_t line_rpy;
+		line_rpy(0) = 1.5708;
+		line_rpy(1) = line_yaw+1.5708;
+		line_rpy(2) = 0.0;
+
+		orientation_t line_pitch_rpy;
+		line_pitch_rpy(0) = line_pitch;
+		line_pitch_rpy(1) = 0.0;
+		line_pitch_rpy(2) = 0.0;
+
+		// merge yaw and pitch into one rotation
+		rotation_matrix_t rot1 = eulToR(line_rpy);
+		rotation_matrix_t rot2 = eulToR(line_pitch_rpy);
+		rotation_matrix_t rot3 = rot1*rot2;
+
+		pl_segment_pose.quaternion = matToQuat(rot3);
+		pl_segment_pose.position(0) = coefficients->values[0];
+		pl_segment_pose.position(1) = coefficients->values[1];
+		pl_segment_pose.position(2) = coefficients->values[2];
+
+		visualization_msgs::msg::Marker marker;
+		marker.header = std_msgs::msg::Header();
+		marker.header.stamp = this->now();
+		marker.header.frame_id = "world";
+
+		marker.ns = "powerlines";
+		marker.id = i;
+
+		marker.type = visualization_msgs::msg::Marker::CYLINDER;
+
+		marker.action = visualization_msgs::msg::Marker::ADD;
+
+		marker.pose.orientation.x = pl_segment_pose.quaternion(0);
+		marker.pose.orientation.y = pl_segment_pose.quaternion(1);
+		marker.pose.orientation.z = pl_segment_pose.quaternion(2);
+		marker.pose.orientation.w = pl_segment_pose.quaternion(3);
+		marker.pose.position.x = pl_segment_pose.position(0);
+		marker.pose.position.y = pl_segment_pose.position(1);
+		marker.pose.position.z = pl_segment_pose.position(2); // to fit plane from ground to above line
+
+		// Set the scale of the marker -- 1x1x1 here means 1m on a side
+		marker.scale.x = 0.75;
+		marker.scale.y = 0.75;
+		marker.scale.z = 6;
+		// Set the color -- be sure to set alpha to something non-zero!
+		marker.color.r = 1.0f;
+		marker.color.g = 0.0f;
+		marker.color.b = 0.0f;
+		marker.color.a = 0.6;
+
+		marker.lifetime = rclcpp::Duration::from_seconds(0);
+
+
+		marker_array.markers.push_back(marker);
+
 	}
+
+	_pl_marker_array_pub->publish(marker_array);
 
 	// RCLCPP_INFO(this->get_logger(), "\nPlane points contains %d points\n", plane_points->size());
 

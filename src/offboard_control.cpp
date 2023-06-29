@@ -756,7 +756,15 @@ void OffboardControl::pathplanner(point2d_t point_start, point2d_t point_goal, p
 	scaled_point_goal(1) = (point_goal(1)*scale);
 
 	RCLCPP_INFO(this->get_logger(), "Generating path ...");
+
+	auto start = high_resolution_clock::now();
+
     auto path = generator.findPath({(int)scaled_point_start(0), (int)scaled_point_start(1)}, {(int)scaled_point_goal(0), (int)scaled_point_goal(1)});
+
+	auto stop = high_resolution_clock::now();
+	float duration = (float)duration_cast<microseconds>(stop - start).count() / 1000;
+
+	RCLCPP_INFO(this->get_logger(), "Generating path took %f ms", duration);
 
     for(auto& coordinate : path) {
 		// RCLCPP_INFO(this->get_logger(), "%d, %d", coordinate.x, coordinate.y);
@@ -1101,9 +1109,25 @@ void OffboardControl::flight_state_machine() {
 		msg.y = -planned_path_pcl->points[path_pos_cnt].y; // in meters NED
 		msg.z = -planned_path_pcl->points[path_pos_cnt].z; // in meters NED
 		msg.yaw = -quatToEul(_alignment_pose.quaternion)(2); // rotation around z NED in radians
-		msg.vx = 0.0; // m/s NED
-		msg.vy = 0.0; // m/s NED
-		msg.vz = 0.0; // m/s NED
+
+		// if (path_pos_cnt != 0 && path_pos_cnt < ((int)planned_path_pcl->size()-1)) // do unless first or last coordinate
+		// {
+		// 	float diff_x = planned_path_pcl->points[(path_pos_cnt+1)].x - planned_path_pcl->points[path_pos_cnt].x;
+		// 	float diff_y = -(planned_path_pcl->points[(path_pos_cnt+1)].y - planned_path_pcl->points[path_pos_cnt].y);
+		// 	float diff_z = -(planned_path_pcl->points[(path_pos_cnt+1)].z - planned_path_pcl->points[path_pos_cnt].z);
+
+		// 	float traj_speed = 0.5;
+
+		// 	msg.vx = (diff_x / abs(diff_x)) * traj_speed; // m/s NED
+		// 	msg.vy = (diff_y / abs(diff_y)) * traj_speed; // m/s NED
+		// 	msg.vz = (diff_z / abs(diff_z)) * traj_speed;// m/s NED
+
+		// 	RCLCPP_INFO(this->get_logger(), "\n vx %f\n", msg.vx);
+		// 	RCLCPP_INFO(this->get_logger(), "vy %f\n", msg.vy);
+		// 	RCLCPP_INFO(this->get_logger(), "vz %f\n", msg.vz);
+
+		// }
+		
 
 		OffboardControl::publish_setpoint(msg);
 
@@ -1112,7 +1136,7 @@ void OffboardControl::flight_state_machine() {
 		float y_diff = _drone_pose.position(1) - planned_path_pcl->points[path_pos_cnt].y;
 		float z_diff = _drone_pose.position(2) - planned_path_pcl->points[path_pos_cnt].z;
 
-		float threshold = 0.2;
+		float threshold = 0.25;
 		if ( x_diff < threshold &&
 			 y_diff < threshold &&
 			 z_diff < threshold &&
@@ -1124,7 +1148,7 @@ void OffboardControl::flight_state_machine() {
 			path_pos_cnt++;
 		}
 		else {
-			RCLCPP_INFO(this->get_logger(), "\n Delta to position %d/%d: \n X: %f \n Y: %f \n Z: %f \n", path_pos_cnt, (int)planned_path_pcl->size(), x_diff, y_diff, z_diff);
+			RCLCPP_INFO(this->get_logger(), "\n Delta to position %d/%d: \n X: %f \n Y: %f \n Z: %f \n", path_pos_cnt+1, (int)planned_path_pcl->size(), x_diff, y_diff, z_diff);
 		}
 
 		return;
@@ -1132,6 +1156,15 @@ void OffboardControl::flight_state_machine() {
 	}
 
 
+	// px4_msgs::msg::TrajectorySetpoint msg{};
+	// msg.timestamp = _timestamp.load();
+	// msg.x = NAN; // in meters NED
+	// msg.y = NAN; // in meters NED
+	// msg.z = NAN; // in meters NED
+	// msg.yaw = -quatToEul(_alignment_pose.quaternion)(2); // rotation around z NED in radians
+	// msg.vx = 0.0; // m/s NED
+	// msg.vy = 0.0; // m/s NED
+	// msg.vz = -0.25; // m/s NED
 	px4_msgs::msg::TrajectorySetpoint msg{};
 	msg.timestamp = _timestamp.load();
 	msg.x = planned_path_pcl->points.back().x; // in meters NED

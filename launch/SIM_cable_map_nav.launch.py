@@ -51,11 +51,17 @@ def generate_launch_description():
         parameters=[config]
     )
 
+    interactive_marker = Node(
+        package="cable-map-nav",
+        executable="interactive_marker",
+    )
+
 
     return LaunchDescription([
         tf_drone_to_iwr,
         world_to_drone,
         lidar_to_mmwave,
         radar_pointcloud_filter,
-        offboard_control
+        offboard_control,
+        interactive_marker
     ])
